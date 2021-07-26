@@ -112,7 +112,8 @@ lr_decayed_fn = tf.keras.experimental.CosineDecay(
 	700,
 )
 
-opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
+opt = opt = tf.keras.optimizers.Adam(0.001)
+
 model.compile(optimizer=opt,
               loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
 model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
