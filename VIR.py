@@ -60,7 +60,7 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=96, shuffle=True):
+	def __init__(self, idx, y=None, batch_size=128, shuffle=True):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -97,18 +97,23 @@ y = train_labels['target'].values
 x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
 train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid)
-import efficientnet.tfkeras as efn
+from vit_keras import vit
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-                             L.experimental.preprocessing.Resizing(128, 128),
-                             efn.EfficientNetB7(include_top=False, input_shape=(), weights='noisy-student'),
-                             L.GlobalAveragePooling2D(),
-                             L.Dense(32, activation='relu'),
-                             L.Dense(1, activation='sigmoid')])
+base = vit.vit_b16(image_size=128, classes=2, activation="sigmoid", pretrained=True, include_top=False,
+                   pretrained_top=False)
+base.trainable = True
+model = tf.keras.Sequential([
+	L.InputLayer(input_shape=(69, 193, 1)),
+	L.Conv2D(3, 3, activation='relu', padding='same'),
+	L.experimental.preprocessing.Resizing(128, 128),
+	base,
+	L.Flatten(),
+	L.Dense(32, activation='relu'),
+	L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True, mode="max")
 model.summary()
 
 opt = tf.keras.optimizers.Adam(0.001)
 model.compile(optimizer=opt,
               loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
-model.fit(train_dataset, epochs=7, validation_data=valid_dataset, callbacks=best)
+model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
