@@ -100,6 +100,7 @@ valid_dataset = Dataset(x_valid, y_valid)
 import efficientnet.tfkeras as efn
 
 model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+                             L.experimental.preprocessing.Resizing(128, 128),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),

@@ -84,18 +84,14 @@ train_dataset = Dataset(x_train,y_train)
 valid_dataset = Dataset(x_valid,y_valid)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69,193,1)),L.Conv2D(3,3,activation='relu',padding='same'),efn.EfficientNetB7(include_top=False,input_shape=(),weights='imagenet'),
+model = tf.keras.Sequential([L.InputLayer(input_shape=(69,193,1)),L.Conv2D(3,3,activation='relu',padding='same'),efn.EfficientNetB7(include_top=False,input_shape=(),weights='noisy-student'),
         L.GlobalAveragePooling2D(),
         L.Dense(32,activation='relu'),
         L.Dense(1, activation='sigmoid')])
-best = tf.keras.callbacks.ModelCheckpoint("/content/Temp",monitor="val_auc",save_best_only=True)
+best = tf.keras.callbacks.ModelCheckpoint("/content/Temp",monitor="val_auc",save_best_only=True,mode="max")
 model.summary()
-lr_decayed_fn = tf.keras.experimental.CosineDecay(
-		1e-3,
-		700,
-	)
 
-opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
+opt = tf.keras.optimizers.Adam(0.001)
 model.compile(optimizer=opt,
               loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
 model.fit(train_dataset,epochs=5,validation_data=valid_dataset,callbacks=best)
