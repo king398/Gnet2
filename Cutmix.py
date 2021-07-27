@@ -25,34 +25,37 @@ for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
 
 
-def aug():
-	return A.Compose([
-		A.ToFloat(),
-		A.augmentations.crops.transforms.RandomResizedCrop(height=128, width=128,
-		                                                   always_apply=True, p=1.0),
-
-	])
-
-
-def mixup(image, label, PROBABILITY=1.0):
+def cutmix(image, label, PROBABILITY=1.0):
 	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
-	# output - a batch of images with mixup applied
+	# output - a batch of images with cutmix applied
 	DIM = 128
 	CLASSES = 2
 
 	imgs = [];
 	labs = []
 	for j in range(len(image)):
-		# DO MIXUP WITH PROBABILITY DEFINED ABOVE
-		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.float32)
-		# CHOOSE RANDOM
+		# DO CUTMIX WITH PROBABILITY DEFINED ABOVE
+		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.int32)
+		# CHOOSE RANDOM IMAGE TO CUTMIX WITH
 		k = tf.cast(tf.random.uniform([], 0, len(image)), tf.int32)
-		a = tf.random.uniform([], 0, 1) * P  # this is beta dist with alpha=1.0
-		# MAKE MIXUP IMAGE
-		img1 = image[j,]
-		img2 = image[k,]
-		imgs.append((1 - a) * img1 + a * img2)
+		# CHOOSE RANDOM LOCATION
+		x = tf.cast(tf.random.uniform([], 0, DIM), tf.int32)
+		y = tf.cast(tf.random.uniform([], 0, DIM), tf.int32)
+		b = tf.random.uniform([], 0, 1)  # this is beta dist with alpha=1.0
+		WIDTH = tf.cast(DIM * tf.math.sqrt(1 - b), tf.int32) * P
+		ya = tf.math.maximum(0, y - WIDTH // 2)
+		yb = tf.math.minimum(DIM, y + WIDTH // 2)
+		xa = tf.math.maximum(0, x - WIDTH // 2)
+		xb = tf.math.minimum(DIM, x + WIDTH // 2)
+		# MAKE CUTMIX IMAGE
+		one = image[j, ya:yb, 0:xa, :]
+		two = image[k, ya:yb, xa:xb, :]
+		three = image[j, ya:yb, xb:DIM, :]
+		middle = tf.concat([one, two, three], axis=1)
+		img = tf.concat([image[j, 0:ya, :, :], middle, image[j, yb:DIM, :, :]], axis=0)
+		imgs.append(img)
 		# MAKE CUTMIX LABEL
+		a = tf.cast(WIDTH * WIDTH / DIM / DIM, tf.float32)
 		if len(label.shape) == 1:
 			lab1 = tf.one_hot(label[j], CLASSES)
 			lab2 = tf.one_hot(label[k], CLASSES)
@@ -62,7 +65,8 @@ def mixup(image, label, PROBABILITY=1.0):
 		labs.append((1 - a) * lab1 + a * lab2)
 
 	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 193, 1))
+
+	image2 = tf.reshape(tf.stack(imgs), (len(image), DIM, DIM, 1))
 	label2 = tf.reshape(tf.stack(labs), (len(image), CLASSES))
 	return image2, label2
 
@@ -103,12 +107,11 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False, aug=aug()):
+	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
 		self.valid = valid
-		self.aug = aug
 		if y is not None:
 			self.is_train = True
 		else:
@@ -125,10 +128,10 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
+		batch_X = tf.image.resize(images=batch_X, size=(128, 128))
 
 		if self.valid == False:
-			batch_X, batch_y = mixup(batch_X, batch_y)
+			batch_X, batch_y = cutmix(batch_X, batch_y)
 		if self.valid:
 			batch_y = tf.one_hot(batch_y, depth=2)
 
