@@ -81,15 +81,18 @@ from nnAudio.Spectrogram import CQT1992v2
 
 
 def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
-                                                          hop_length=32)):  # in order to use efficientnet we need 3 dimension images
-	waves = np.load(id2path(idx, is_train))
-	waves = np.hstack(waves)
-	waves = waves / np.max(waves)
-	waves = torch.from_numpy(waves).float()
-	image = transform(waves)
-	image = np.array(image)
-	image = np.transpose(image, (1, 2, 0))
-	return image
+                                                          hop_length=32)):
+	images = []
+	for i in idx:  # in order to use efficientnet we need 3 dimension images
+		waves = np.load(id2path(i, is_train))
+		waves = np.hstack(waves)
+		waves = waves / np.max(waves)
+		waves = torch.from_numpy(waves).float()
+		image = transform(waves)
+		image = np.array(image)
+		image = np.transpose(image, (1, 2, 0))
+		images.append(i)
+	return images
 
 
 example = np.load(path[4])
@@ -101,67 +104,28 @@ fig.suptitle('Target 1', fontsize=16)
 plt.show()
 plt.show()
 
-
-class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=256, shuffle=True, valid=False, aug=aug()):
-		self.idx = idx
-		self.batch_size = batch_size
-		self.shuffle = shuffle
-		self.valid = valid
-		self.aug = aug
-		if y is not None:
-			self.is_train = True
-		else:
-			self.is_train = False
-		self.y = y
-
-	def __len__(self):
-		return math.ceil(len(self.idx) / self.batch_size)
-
-	def __getitem__(self, ids):
-		batch_ids = self.idx[ids * self.batch_size:(ids + 1) * self.batch_size]
-		if self.y is not None:
-			batch_y = self.y[ids * self.batch_size: (ids + 1) * self.batch_size]
-
-		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
-		batch_X = np.stack(list_x)
-		if self.valid == False:
-			batch_X, batch_y = mixup(batch_X, batch_y)
-			batch_x = tf.image.resize(images=batch_X,size=(69, 193))
-
-		if self.is_train:
-			return np.array(batch_x), batch_y
-		else:
-			return batch_X
-
-	def on_epoch_end(self):
-		if self.shuffle and self.is_train:
-			ids_y = list(zip(self.idx, self.y))
-			shuffle(ids_y)
-			self.idx, self.y = list(zip(*ids_y))
-
-
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
 x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
-train_dataset = Dataset(x_train, y_train)
-valid_dataset = Dataset(x_valid, y_valid, valid=True)
-import efficientnet.tfkeras as efn
+x_train = tf.constant(x_train)
+y_train = tf.constant(y_train)
+x_valid = tf.constant(x_valid)
+y_valid = tf.constant(y_valid)
+AUTO = tf.data.experimental.AUTOTUNE
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-                             efn.EfficientNetB0(include_top=False, input_shape=(), weights='imagenet'),
-                             L.GlobalAveragePooling2D(),
-                             L.Dense(32, activation='relu'),
-                             L.Dense(2, activation='sigmoid')])
-best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
-model.summary()
-lr_decayed_fn = tf.keras.experimental.CosineDecay(
-	1e-3,
-	700,
-)
 
-opt = tf.keras.optimizers.Adam(0.001)
+def parse(images, labels, aug=aug()):
+	images = np.array(increase_dimension(images, True))
+	images = np.stack(images)
+	images, labels = mixup(images, labels)
+	images = tf.image.resize(images=images, size=(128, 128))
 
-model.compile(optimizer=opt,
-              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
-model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
+	return images, labels
+
+
+train = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+
+train = train.map(map_func=parse, num_parallel_calls=AUTO).batch(batch_size=256)
+for i in train:
+	print(i)
+	break
