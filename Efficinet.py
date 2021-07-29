@@ -53,7 +53,7 @@ def mixup(image, label, PROBABILITY=1.0):
 		img2 = image[k,]
 		imgs.append((1 - a) * img1 + a * img2)
 		# MAKE CUTMIX LABEL
-		if len(label.shape) == 1:
+		if True:
 			lab1 = tf.one_hot(label[j], CLASSES)
 			lab2 = tf.one_hot(label[k], CLASSES)
 		else:
@@ -125,12 +125,15 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
+		print(batch_X.shape)
 
 		if self.valid == False:
 			batch_X, batch_y = mixup(batch_X, batch_y)
+
 		if self.valid:
 			batch_y = tf.one_hot(batch_y, depth=2)
+		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
+
 
 		if self.is_train:
 			return np.array(batch_X), batch_y

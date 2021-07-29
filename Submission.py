@@ -41,7 +41,7 @@ from nnAudio.Spectrogram import CQT1992v2
 def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
                                                           hop_length=64)):  # in order to use efficientnet we need 3 dimension images
 	waves = np.load(id2path(idx, is_train))
-	waves = np.hstack(waves)
+	waves = np.vstack(waves)
 	waves = waves / np.max(waves)
 	waves = torch.from_numpy(waves).float()
 	image = transform(waves)

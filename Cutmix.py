@@ -28,7 +28,7 @@ for i in range(len(path)):
 def cutmix(image, label, PROBABILITY=1.0):
 	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
 	# output - a batch of images with cutmix applied
-	DIM = 128
+	DIM = 512
 	CLASSES = 2
 
 	imgs = [];
@@ -56,7 +56,7 @@ def cutmix(image, label, PROBABILITY=1.0):
 		imgs.append(img)
 		# MAKE CUTMIX LABEL
 		a = tf.cast(WIDTH * WIDTH / DIM / DIM, tf.float32)
-		if len(label.shape) == 1:
+		if True:
 			lab1 = tf.one_hot(label[j], CLASSES)
 			lab2 = tf.one_hot(label[k], CLASSES)
 		else:
@@ -107,7 +107,7 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=64, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -128,12 +128,13 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(128, 128))
+		batch_X = tf.image.resize(images=batch_X, size=(512,512))
 
 		if self.valid == False:
 			batch_X, batch_y = cutmix(batch_X, batch_y)
 		if self.valid:
 			batch_y = tf.one_hot(batch_y, depth=2)
+		batch_X = tf.image.resize(images=batch_X, size=(96,385))
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -154,7 +155,7 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+model = tf.keras.Sequential([L.InputLayer(input_shape=(96,385, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),
