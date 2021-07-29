@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 import plotly.express as px
 import tensorflow as tf
-import tensorflow.keras
+import tensorflow.keras as keras
 import tensorflow.keras.layers as L
 import math
 from tensorflow.keras.utils import Sequence
@@ -12,21 +12,24 @@ from tensorflow.keras.preprocessing import image
 from random import shuffle
 from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
-
-train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
-path = list(train_labels['id'])
+sample_submission = pd.read_csv('/content/sample_submission.csv')
+path = list(sample_submission['id'])
+physical_devices = tf.config.list_physical_devices('GPU')
+try:
+	tf.config.experimental.set_memory_growth(physical_devices[0], True)
+except:
+		# Invalid device or cannot modify virtual devices once initialized.
+	pass
+# Equivalent to the two lines above
 for i in range(len(path)):
-	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
+	path[i] = '/content/test/' + path[i][0] + '/' + path[i][1] + '/' + path[i][
+		2] + '/' + path[i] + '.npy'
 
 
 def id2path(idx, is_train=True):
-	path = '../input/g2net-gravitational-wave-detection'
-	if is_train:
-		path = "/content/Train/" + idx[0] + '/' + idx[1] + '/' + idx[2] + '/' + idx + '.npy'
-	else:
-		path += '/test/' + idx[0] + '/' + idx[1] + '/' + idx[2] + '/' + idx + '.npy'
+	path = '/content/test/' + idx[0] + '/' + idx[1] + '/' + idx[2] + '/' + idx + '.npy'
 	return path
 
 
@@ -46,18 +49,11 @@ def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax
 	return image
 
 
-example = np.load(path[4])
-fig, a = plt.subplots(3, 1)
-a[0].plot(example[1], color='green')
-a[1].plot(example[1], color='red')
-a[2].plot(example[1], color='yellow')
-fig.suptitle('Target 1', fontsize=16)
-plt.show()
-plt.show()
+example = np.load(path[0])
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=128, shuffle=True):
+	def __init__(self, idx, y=None, batch_size=512, shuffle=True):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -89,27 +85,18 @@ class Dataset(Sequence):
 			self.idx, self.y = list(zip(*ids_y))
 
 
-train_idx = train_labels['id'].values
-y = train_labels['target'].values
-x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
-train_dataset = Dataset(x_train, y_train)
-valid_dataset = Dataset(x_valid, y_valid)
+test_idx = sample_submission['id'].values
+test_dataset = Dataset(test_idx)
 
-base = tf.keras.models.load_model("/content/efficientnetv2-b3/feature-vector")
+model = tf.keras.models.load_model(r"/content/models/EfficienetCutmix-20210729T072227Z-001/EfficienetCutmix")
+preds = model.predict(test_dataset, verbose=1)
+preds = preds.reshape(-1)
+prediction = []
+o = 0
+for i in preds:
+	if o % 2 != 0:
+		prediction.append(i)
+	o += 1
 
-base.trainable = True
-model = tf.keras.Sequential([
-	L.InputLayer(input_shape=(69, 193, 1)),
-	L.Conv2D(3, 3, activation='relu', padding='same'),
-	L.experimental.preprocessing.Resizing(128, 128),
-	base,
-	L.Flatten(),
-	L.Dense(32, activation='relu'),
-	L.Dense(1, activation='sigmoid')])
-best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True, mode="max")
-model.summary()
-
-opt = tf.keras.optimizers.Adam(0.001)
-model.compile(optimizer=opt,
-              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
-model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
+submission = pd.DataFrame({'id': sample_submission['id'], 'target': prediction})
+submission.to_csv('submission.csv', index=False)

@@ -62,7 +62,7 @@ def mixup(image, label, PROBABILITY=1.0):
 		labs.append((1 - a) * lab1 + a * lab2)
 
 	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 193, 1))
+	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 385, 1))
 	label2 = tf.reshape(tf.stack(labs), (len(image), CLASSES))
 	return image2, label2
 
@@ -103,7 +103,7 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False, aug=aug()):
+	def __init__(self, idx, y=None, batch_size=48, shuffle=True, valid=False, aug=aug()):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -125,14 +125,12 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		print(batch_X.shape)
 
 		if self.valid == False:
 			batch_X, batch_y = mixup(batch_X, batch_y)
 
 		if self.valid:
 			batch_y = tf.one_hot(batch_y, depth=2)
-		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
 
 
 		if self.is_train:
@@ -154,7 +152,7 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 385, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),
