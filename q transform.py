@@ -3,8 +3,7 @@ import tensorflow.keras.layers as L
 
 from tensorflow.keras import mixed_precision
 
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
+mixed_precision.set_global_policy('mixed_float16')
 data = tf.keras.preprocessing.image.ImageDataGenerator(rescale=1. / 255, validation_split=0.2)
 train = data.flow_from_directory(directory="/content/Train/Train", target_size=(128, 128), class_mode="sparse",
                                  subset="training", batch_size=64)
@@ -22,7 +21,6 @@ model = tf.keras.Sequential([
 	L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True, mode="max")
 model.summary()
-
 opt = tf.keras.optimizers.Adam(0.00005)
 print(len(train))
 
