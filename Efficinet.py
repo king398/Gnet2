@@ -81,7 +81,7 @@ from nnAudio.Spectrogram import CQT1992v2
 
 
 def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
-                                                          hop_length=32)):  # in order to use efficientnet we need 3 dimension images
+                                                          hop_length=64)):  # in order to use efficientnet we need 3 dimension images
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
 	waves = waves / np.max(waves)
@@ -126,11 +126,6 @@ class Dataset(Sequence):
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
 
-		if self.valid == False:
-			batch_X, batch_y = mixup(batch_X, batch_y)
-
-		if self.valid:
-			batch_y = tf.one_hot(batch_y, depth=2)
 
 
 		if self.is_train:
@@ -147,16 +142,16 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
-x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
+x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.05, random_state=42, stratify=y)
 train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 385, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),
-                             L.Dense(2, activation='sigmoid')])
+                             L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
 model.summary()
 lr_decayed_fn = tf.keras.experimental.CosineDecay(
@@ -164,7 +159,7 @@ lr_decayed_fn = tf.keras.experimental.CosineDecay(
 	700,
 )
 
-opt = tf.keras.optimizers.Adam(0.001)
+opt = tf.keras.optimizers.Adam(0.00005)
 i = 0
 print(len(train_dataset))
 
