@@ -100,12 +100,12 @@ y = train_labels['target'].values
 x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.05, random_state=42, stratify=y)
 train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
-base = tf.keras.models.load_model("/content/efficientnetv2-m")
+base = tf.keras.models.load_model("/content/efficientnetv2-m/feature-vector")
 
 model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
 
                              base,
-                             L.GlobalAveragePooling2D(),
+                             L.Flatten(),
                              L.Dense(32, activation='relu'),
                              L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
