@@ -10,10 +10,11 @@ import math
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.preprocessing import image
 from random import shuffle
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 import tensorflow_addons as tfa
 import albumentations as A
-from sklearn.mo
+from sklearn.model_selection import KFold
+
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
@@ -23,15 +24,6 @@ mixed_precision.set_global_policy(policy)
 path = list(train_labels['id'])
 for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
-
-
-def aug():
-	return A.Compose([
-		A.ToFloat(),
-		A.augmentations.crops.transforms.RandomResizedCrop(height=128, width=128,
-		                                                   always_apply=True, p=1.0),
-
-	])
 
 
 def mixup(image, label, PROBABILITY=1.0):
@@ -98,12 +90,11 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False, aug=aug()):
+	def __init__(self, idx, y=None, batch_size=256, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
 		self.valid = valid
-		self.aug = aug
 		if y is not None:
 			self.is_train = True
 		else:
@@ -122,11 +113,8 @@ class Dataset(Sequence):
 		batch_X = np.stack(list_x)
 		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
 
-
 		if self.valid == False:
 			batch_X, batch_y = mixup(np.array(batch_X), np.array(batch_y))
-
-
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -142,27 +130,37 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
-train_dataset = Dataset(x_train, y_train)
-valid_dataset = Dataset(x_valid, y_valid, valid=True)
-base = tf.keras.models.load_model("/content/efficientnetv2-b1/feature-vector")
+
+
 def model():
-	model = tf.keras.Sequential([
-	L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-    base,
-                             L.Flatten(),
-                             L.Dense(32, activation='relu'),
-                             L.Dense(1, activation='sigmoid')])
-best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
-model.summary()
-lr_decayed_fn = tf.keras.experimental.CosineDecay(
-	1e-3,
-	700,
-)
+	import efficientnet.tfkeras as efn
 
-opt = tf.keras.optimizers.Adam(0.00005)
-	
+	model = tf.keras.Sequential(
+		[L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+		 efn.EfficientNetB0(include_top=False, input_shape=(), weights='imagenet'),
+		 L.GlobalAveragePooling2D(),
+		 L.Dense(32, activation='relu'),
+		 L.Dense(1, activation='sigmoid')])
+	model.summary()
+
+	opt = tf.keras.optimizers.Adam(0.001)
+	model.compile(optimizer=opt,
+	              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
+	return model
 
 
-model.compile(optimizer=opt,
-              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
-model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
+oof_preds = []
+skf = KFold(n_splits=5, random_state=42, shuffle=True)
+fold = 0
+for train, test in skf.split(train_idx, y=y):
+	tf.keras.backend.clear_session()
+	train_dataset = Dataset(train_idx[train], y[train])
+	test_dataset = Dataset(train_idx[test], y[test], valid=True)
+	model = model()
+	if fold == 0 or fold == 1 or fold == 2:
+		best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
+
+		history = model.fit(train_dataset, epochs=3, validation_data=test_dataset, callbacks=best)
+		model.save("/content/Models/Fold" + str(fold))
+
+		oof_preds.append(history.history['val_auc'])
