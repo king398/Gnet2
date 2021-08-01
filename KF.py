@@ -13,7 +13,7 @@ from random import shuffle
 from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
 import albumentations as A
-
+from sklearn.mo
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
@@ -122,9 +122,11 @@ class Dataset(Sequence):
 		batch_X = np.stack(list_x)
 		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
 
+
 		if self.valid == False:
-			np.array(batch_X), np.array(batch_y) = mixup(batch_X, batch_y)
-			batch_y = batch_y * LABEL_POSITIVE_SHIFT
+			batch_X, batch_y = mixup(np.array(batch_X), np.array(batch_y))
+
+
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -140,14 +142,14 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
-x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
 train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
-import efficientnet.tfkeras as efn
-
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-                             efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
-                             L.GlobalAveragePooling2D(),
+base = tf.keras.models.load_model("/content/efficientnetv2-b1/feature-vector")
+def model():
+	model = tf.keras.Sequential([
+	L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+    base,
+                             L.Flatten(),
                              L.Dense(32, activation='relu'),
                              L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
@@ -157,9 +159,9 @@ lr_decayed_fn = tf.keras.experimental.CosineDecay(
 	700,
 )
 
-opt = tf.keras.optimizers.Adam(0.001)
-i = 0
-print(len(train_dataset))
+opt = tf.keras.optimizers.Adam(0.00005)
+	
+
 
 model.compile(optimizer=opt,
               loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
