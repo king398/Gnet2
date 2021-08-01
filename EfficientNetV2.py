@@ -25,6 +25,43 @@ for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
 
 
+def aug():
+	return A.Compose([
+		A.ToFloat(),
+		A.augmentations.crops.transforms.RandomResizedCrop(height=128, width=128,
+		                                                   always_apply=True, p=1.0),
+
+	])
+
+
+def mixup(image, label, PROBABILITY=1.0):
+	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
+	# output - a batch of images with mixup applied
+
+	imgs = [];
+	labs = []
+	for j in range(len(image)):
+		# DO MIXUP WITH PROBABILITY DEFINED ABOVE
+		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.float32)
+		# CHOOSE RANDOM
+		k = tf.cast(tf.random.uniform([], 0, len(image)), tf.int32)
+		a = tf.random.uniform([], 0, 1) * P  # this is beta dist with alpha=1.0
+		# MAKE MIXUP IMAGE
+		img1 = image[j,]
+		img2 = image[k,]
+		imgs.append((1 - a) * img1 + a * img2)
+		# MAKE CUTMIX LABEL
+		lab1 = label[j]
+		lab2 = label[k]
+		labs.append((1 - a) * lab1 + a * lab2)
+
+	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
+	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 193, 1))
+	label2 = tf.reshape(tf.stack(labs), (len(image)))
+
+	return image2, label2
+
+
 def id2path(idx, is_train=True):
 	path = '../input/g2net-gravitational-wave-detection'
 	if is_train:
@@ -39,7 +76,7 @@ from nnAudio.Spectrogram import CQT1992v2
 
 
 def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
-                                                          hop_length=64)):  # in order to use efficientnet we need 3 dimension images
+                                                          hop_length=32)):  # in order to use efficientnet we need 3 dimension images
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
 	waves = waves / np.max(waves)
@@ -61,11 +98,12 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=48, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False, aug=aug()):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
 		self.valid = valid
+		self.aug = aug
 		if y is not None:
 			self.is_train = True
 		else:
@@ -82,6 +120,13 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
+		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
+
+
+		if self.valid == False:
+			batch_X, batch_y = mixup(np.array(batch_X), np.array(batch_y))
+
+
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -97,13 +142,12 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
-x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.05, random_state=42, stratify=y)
+x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
 train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
-base = tf.keras.models.load_model("/content/efficientnetv2-m/feature-vector")
+base = tf.keras.models.load_model("/content/efficientnetv2-b1/feature-vector")
 
 model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-
                              base,
                              L.Flatten(),
                              L.Dense(32, activation='relu'),

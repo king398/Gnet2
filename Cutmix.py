@@ -28,7 +28,7 @@ for i in range(len(path)):
 def cutmix(image, label, PROBABILITY=1.0):
 	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
 	# output - a batch of images with cutmix applied
-	DIM = 512
+	DIM = 128
 	CLASSES = 2
 
 	imgs = [];
@@ -128,13 +128,13 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(512,512))
+		batch_X = tf.image.resize(images=batch_X, size=(128,128))
+
 
 		if self.valid == False:
 			batch_X, batch_y = cutmix(batch_X, batch_y)
 		if self.valid:
 			batch_y = tf.one_hot(batch_y, depth=2)
-		batch_X = tf.image.resize(images=batch_X, size=(96,385))
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -155,11 +155,11 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(96,385, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+model = tf.keras.Sequential([L.InputLayer(input_shape=(128,128,1)), L.Conv2D(3, 3, activation='relu', padding='same'),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),
-                             L.Dense(2, activation='sigmoid')])
+                             L.Dense(2, activation='softmax')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
 model.summary()
 lr_decayed_fn = tf.keras.experimental.CosineDecay(
