@@ -26,32 +26,6 @@ for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
 
 
-def mixup(image, label, PROBABILITY=1.0):
-	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
-	# output - a batch of images with mixup applied
-
-	imgs = [];
-	labs = []
-	for j in range(len(image)):
-		# DO MIXUP WITH PROBABILITY DEFINED ABOVE
-		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.float32)
-		# CHOOSE RANDOM
-		k = tf.cast(tf.random.uniform([], 0, len(image)), tf.int32)
-		a = tf.random.uniform([], 0, 1) * P  # this is beta dist with alpha=1.0
-		# MAKE MIXUP IMAGE
-		img1 = image[j,]
-		img2 = image[k,]
-		imgs.append((1 - a) * img1 + a * img2)
-		# MAKE CUTMIX LABEL
-		lab1 = label[j]
-		lab2 = label[k]
-		labs.append((1 - a) * lab1 + a * lab2)
-
-	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 193, 1))
-	label2 = tf.reshape(tf.stack(labs), (len(image)))
-
-	return image2, label2
 
 
 def id2path(idx, is_train=True):
@@ -111,10 +85,8 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
 
-		if self.valid == False:
-			batch_X, batch_y = mixup(np.array(batch_X), np.array(batch_y))
+
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -135,32 +107,37 @@ y = train_labels['target'].values
 def model():
 	import efficientnet.tfkeras as efn
 
-	model = tf.keras.Sequential(
-		[L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-		 efn.EfficientNetB0(include_top=False, input_shape=(), weights='imagenet'),
-		 L.GlobalAveragePooling2D(),
-		 L.Dense(32, activation='relu'),
-		 L.Dense(1, activation='sigmoid')])
-	model.summary()
+	inp = inp = tf.keras.layers.Input(shape=(69,193, 1))
+	base =  L.Conv2D(3, 3, activation='relu', padding='same')
+	x = base(inp)
+	x = efn.EfficientNetB0(include_top=False, input_shape=(), weights='imagenet')(x)
+	x = L.GlobalAveragePooling2D()(x)
+	x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+	model = tf.keras.Model(inputs=inp, outputs=x)
+
 
 	opt = tf.keras.optimizers.Adam(0.001)
 	model.compile(optimizer=opt,
-	              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
+	              loss=tf.keras.losses.BinaryCrossentropy(from_logits=True), metrics=[tf.keras.metrics.AUC()])
 	return model
 
 
 oof_preds = []
-skf = KFold(n_splits=5, random_state=42, shuffle=True)
+skf = KFold(n_splits=4, random_state=42, shuffle=True)
 fold = 0
 for train, test in skf.split(train_idx, y=y):
 	tf.keras.backend.clear_session()
 	train_dataset = Dataset(train_idx[train], y[train])
 	test_dataset = Dataset(train_idx[test], y[test], valid=True)
-	model = model()
-	if fold == 0 or fold == 1 or fold == 2:
-		best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
+	if fold == 2 or fold == 3:
+		model = model()
+
+		best = tf.keras.callbacks.ModelCheckpoint(, monitor="val_auc",save_best_only=True)
+
 
 		history = model.fit(train_dataset, epochs=3, validation_data=test_dataset, callbacks=best)
+		model  = tf.keras.models.load_model("/content/Temp")
 		model.save("/content/Models/Fold" + str(fold))
 
 		oof_preds.append(history.history['val_auc'])
+	fold += 1
