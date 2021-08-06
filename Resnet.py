@@ -31,6 +31,7 @@ import tensorflow as tf
 import tensorflow.keras.backend as K
 import efficientnet.tfkeras as efn
 import tensorflow_addons as tfa
+from tensorflow.keras import mixed_precision
 
 tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
 # Metrics
@@ -50,6 +51,7 @@ def seed_everything(seed=RANDOM_SEED):
 
 import os
 from tensorflow.python.profiler import profiler_client
+
 seed_everything()
 
 tpu_profile_service_address = os.environ['COLAB_TPU_ADDR'].replace('8470', '8466')
@@ -76,8 +78,8 @@ def auto_select_accelerator():
 # Model Params
 KFOLDS = 4
 IMG_SIZES = [256] * KFOLDS
-BATCH_SIZES = [42] * KFOLDS
-EPOCHS = [30] * KFOLDS
+BATCH_SIZES = [64] * KFOLDS
+EPOCHS = [20] * KFOLDS
 EFF_NETS = [7] * KFOLDS  # WHICH EFFICIENTNET B? TO USE
 
 AUG = True
@@ -98,7 +100,7 @@ from tqdm.notebook import tqdm
 
 files_train_g = []
 for i, k in tqdm([(0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15)]):
-	GCS_PATH = "gs://kds-45a91535658658322f84a0dd167c8ee2ed6d18989bfe3c7ea606e6ad"
+	GCS_PATH = "gs://kds-39f3942e5fbf1a9b863a2b98759323c7865f31d77e2dacdd9a814506"
 	files_train_g.extend(np.sort(np.array(tf.io.gfile.glob(GCS_PATH + '/train*.tfrec'))).tolist())
 num_train_files = len(files_train_g)
 print(files_train_g)
@@ -131,6 +133,7 @@ def mixup(image, label, PROBABILITY=1.0, AUG_BATCH=BATCH_SIZES[0] * REPLICAS):
 	image2 = tf.reshape(tf.stack(imgs), (AUG_BATCH, DIM, DIM, 3))
 	label2 = tf.reshape(tf.stack(labs), (AUG_BATCH,))
 	return image2, label2
+
 
 def time_shift(img, shift=T_SHIFT):
 	T = IMG_SIZES[0]
@@ -237,23 +240,17 @@ EFNS = [efn.EfficientNetB0, efn.EfficientNetB1, efn.EfficientNetB2, efn.Efficien
         efn.EfficientNetB4, efn.EfficientNetB5, efn.EfficientNetB6, efn.EfficientNetB7]
 
 
-from classification_models.tfkeras import Classifiers
-
-
-# for tensorflow.keras
-# from classification_models.tfkeras import Classifiers
-
-
-def build_model(size, ef=1, count=820):
+def build_model(size, ef=EFF_NETS[0], count=820):
 	inp = tf.keras.layers.Input(shape=(size, size, 3))
-	ResNet18, preprocess_input = Classifiers.get('resnext50') 
-	base = ResNet18((256,256,3), weights='imagenet', include_top=False)
+	base = efn.EfficientNetB1(input_shape=(size, size, 3), weights='noisy-student', include_top=False)
 
 	x = base(inp)
 
 	x = tf.keras.layers.Flatten()(x)
+	x = tf.keras.layers.Dense(64, activation='relu')(x)
 
-	x = tf.keras.layers.Dropout(0.2)(x)
+	x = tf.keras.layers.Dense(32, activation='relu')(x)
+
 	x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
 	model = tf.keras.Model(inputs=inp, outputs=x)
 	lr_decayed_fn = tf.keras.experimental.CosineDecay(
@@ -269,7 +266,7 @@ def build_model(size, ef=1, count=820):
 
 def vis_lr_callback(batch_size=8):
 	lr_start = 1e-4
-	lr_max = 0.000015 * REPLICAS * batch_size
+	lr_max = 0.000020 * REPLICAS * batch_size
 	lr_min = 1e-5
 	lr_ramp_ep = 4
 	lr_sus_ep = 0

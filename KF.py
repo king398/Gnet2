@@ -26,8 +26,6 @@ for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
 
 
-
-
 def id2path(idx, is_train=True):
 	path = '../input/g2net-gravitational-wave-detection'
 	if is_train:
@@ -86,8 +84,6 @@ class Dataset(Sequence):
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
 
-
-
 		if self.is_train:
 			return np.array(batch_X), batch_y
 		else:
@@ -107,16 +103,19 @@ y = train_labels['target'].values
 def model():
 	import efficientnet.tfkeras as efn
 
-	inp = inp = tf.keras.layers.Input(shape=(69,193, 1))
-	base =  L.Conv2D(3, 3, activation='relu', padding='same')
+	inp = inp = tf.keras.layers.Input(shape=(69, 193, 1))
+	base = L.Conv2D(3, 3, activation='relu', padding='same')
 	x = base(inp)
-	x = efn.EfficientNetB0(include_top=False, input_shape=(), weights='imagenet')(x)
+	x = efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet')(x)
 	x = L.GlobalAveragePooling2D()(x)
 	x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
 	model = tf.keras.Model(inputs=inp, outputs=x)
+	lr_decayed_fn = tf.keras.experimental.CosineDecay(
+		1e-3,
+		820,
+	)
 
-
-	opt = tf.keras.optimizers.Adam(0.001)
+	opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
 	model.compile(optimizer=opt,
 	              loss=tf.keras.losses.BinaryCrossentropy(from_logits=True), metrics=[tf.keras.metrics.AUC()])
 	return model
@@ -132,11 +131,11 @@ for train, test in skf.split(train_idx, y=y):
 	if fold == 2 or fold == 3:
 		model = model()
 
-		best = tf.keras.callbacks.ModelCheckpoint(, monitor="val_auc",save_best_only=True)
-
+		best = tf.keras.callbacks.ModelCheckpoint(filepath='model.{epoch:02d}-{val_auc:.4f}' + ":" + str(fold),
+		                                          monitor="val_auc")
 
 		history = model.fit(train_dataset, epochs=3, validation_data=test_dataset, callbacks=best)
-		model  = tf.keras.models.load_model("/content/Temp")
+		model = tf.keras.models.load_model("/content/Temp")
 		model.save("/content/Models/Fold" + str(fold))
 
 		oof_preds.append(history.history['val_auc'])
