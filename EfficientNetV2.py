@@ -122,11 +122,8 @@ class Dataset(Sequence):
 		batch_X = np.stack(list_x)
 		batch_X = tf.image.resize(images=batch_X, size=(69, 193))
 
-
 		if self.valid == False:
 			batch_X, batch_y = mixup(np.array(batch_X), np.array(batch_y))
-
-
 
 		if self.is_train:
 			return np.array(batch_X), batch_y

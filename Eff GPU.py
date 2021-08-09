@@ -15,12 +15,15 @@ import tensorflow_addons as tfa
 import albumentations as A
 from sklearn.model_selection import KFold
 import cv2
+from scipy import signal
+import tensorflow.keras.layers as L
+from CWT.cwt import ComplexMorletCWT
+
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
-
 
 path = list(train_labels['id'])
 for i in range(len(path)):
@@ -40,17 +43,21 @@ import torch
 from nnAudio.Spectrogram import CQT1992v2
 
 
-def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
-                                                          hop_length=32)):  # in order to use efficientnet we need 3 dimension images
+def increase_dimension(idx, is_train):  # in order to use efficientnet we need 3 dimension images
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
+	waves = filterSig(waves)
 	waves = waves / np.max(waves)
-	waves = torch.from_numpy(waves).float()
-	image = transform(waves)
-	image = np.array(image)
-	image = np.transpose(image, (1, 2, 0))
 
-	return image
+	return waves
+
+
+bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
+
+
+def filterSig(waves, a=aHP, b=bHP):
+	'''Apply a 20Hz high pass filter to the three events'''
+	return np.array(signal.filtfilt(b, a, waves))  # lfilter introduces a larger spike around 20hz
 
 
 example = np.load(path[4])
@@ -64,7 +71,7 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=48, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=256, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -84,19 +91,15 @@ class Dataset(Sequence):
 			batch_y = self.y[ids * self.batch_size: (ids + 1) * self.batch_size]
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
-		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(batch_X,size=(384,384))
-
-
 
 		if self.is_train:
-					
-			return np.array(batch_X), batch_y
+
+			return np.array(list_x), batch_y
 
 
-			
+
 		else:
-			return batch_X
+			return list_x
 
 	def on_epoch_end(self):
 		if self.shuffle and self.is_train:
@@ -107,26 +110,24 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
-
+import efficientnet.tfkeras as efn
 
 
 def model():
-	import efficientnet.tfkeras as efn
-
-	inp = inp = tf.keras.layers.Input(shape=(69,385, 1))
-	base =  L.Conv2D(3, 3, activation='relu', padding='same')
-	x = base(inp)
-	x = tf.keras.models.load_model("/content/efficientnetv2-b1")(x)
-	x = L.GlobalAveragePooling2D()(x)
-	x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-	model = tf.keras.Model(inputs=inp, outputs=x)
-
+	model = tf.keras.Sequential([L.InputLayer(input_shape=(3, 4096)),
+	                             ComplexMorletCWT(n_scales=128, stride=128, output='magnitude',
+	                                              data_format='channels_first', wavelet_width=8, fs=1.0, lower_freq=20,
+	                                              upper_freq=1024),
+	                             L.Permute((2, 3, 1)),
+	                             efn.EfficientNetB7(include_top=False, weights='imagenet'),
+	                             L.GlobalAveragePooling2D(),
+	                             L.Dense(32, activation='relu'),
+	                             L.Dense(1, activation='sigmoid')])
 
 	opt = tf.keras.optimizers.Adam(0.001)
 	model.compile(optimizer=opt,
 	              loss=tf.keras.losses.BinaryCrossentropy(from_logits=True), metrics=[tf.keras.metrics.AUC()])
 	return model
-
 
 
 oof_preds = []
@@ -138,7 +139,8 @@ for train, test in skf.split(train_idx, y=y):
 	test_dataset = Dataset(train_idx[test], y[test], valid=True)
 	if fold == 0:
 		model = model()
-		best = tf.keras.callbacks.ModelCheckpoint(filepath='model.{epoch:02d}-{val_auc:.4f}'+":"+str(fold), monitor="val_auc"),
+		best = tf.keras.callbacks.ModelCheckpoint(filepath='model.{epoch:02d}-{val_auc:.4f}' + ":" + str(fold),
+		                                          monitor="val_auc"),
 
 		history = model.fit(train_dataset, epochs=3, validation_data=test_dataset, callbacks=best)
 

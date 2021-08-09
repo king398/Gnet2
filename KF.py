@@ -62,7 +62,7 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=256, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=32, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
