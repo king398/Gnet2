@@ -8,7 +8,6 @@ import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm.notebook import tqdm_notebook as tqdm
 
 
 def convert_image_id_2_path(image_id: str, is_train: bool = True) -> str:
@@ -101,32 +100,6 @@ def set_seed(seed):
 set_seed(42)
 
 
-def mixup_data(x, y, alpha=1.0, use_cuda=True):
-	'''Returns mixed inputs, pairs of targets, and lambda'''
-	if alpha > 0:
-		lam = np.random.beta(alpha, alpha)
-	else:
-		lam = 1
-
-	batch_size = x.size()[0]
-	if use_cuda:
-		index = torch.randperm(batch_size).cuda()
-	else:
-		index = torch.randperm(batch_size)
-
-	mixed_x = lam * x + (1 - lam) * x[index, :]
-	y_a, y_b = y, y[index]
-	return mixed_x, y_a, y_b, lam
-
-
-criterion1 = nn.BCEWithLogitsLoss()
-
-
-def mixup_criterion(pred, y_a, y_b, lam):
-	pred = pred.unsqueeze(1)
-	return lam * criterion1(pred, y_a) + (1 - lam) * criterion(pred, y_b)
-
-
 class DataRetriever(torch_data.Dataset):
 	def __init__(self, paths, targets):
 		self.paths = paths
@@ -176,16 +149,16 @@ valid_data_retriever = DataRetriever(
 )
 train_loader = torch_data.DataLoader(
 	train_data_retriever,
-	batch_size=64,
+	batch_size=32,
 	shuffle=True,
-	num_workers=4,
+	num_workers=8,
 )
 
 valid_loader = torch_data.DataLoader(
 	valid_data_retriever,
-	batch_size=64,
+	batch_size=32,
 	shuffle=False,
-	num_workers=4,
+	num_workers=8,
 )
 
 
@@ -225,9 +198,6 @@ class AccMeter:
 		true_count = np.sum(y_true == y_pred)
 		# incremental update
 		self.avg = true_count / self.n + last_n / self.n * self.avg
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Trainer:
@@ -292,18 +262,13 @@ class Trainer:
 		train_loss = self.loss_meter()
 		train_score = self.score_meter()
 
-		for step, batch in tqdm(enumerate(train_loader, 1)):
-			X = batch["X"].cuda()
-			targets = batch["y"].cuda()
-			inputs1, targets_a, targets_b, lam = mixup_data(X, targets.view(-1, 1), use_cuda=True)
-			inputs1 = inputs1.to(device, dtype=torch.float)
-			targets_a = targets_a.to(device, dtype=torch.float)
-			targets_b = targets_b.to(device, dtype=torch.float)
+		for step, batch in enumerate(train_loader, 1):
+			X = batch["X"].to(self.device)
+			targets = batch["y"].to(self.device)
 			self.optimizer.zero_grad()
+			outputs = self.model(X).squeeze(1)
 
-			outputs = self.model(inputs1).squeeze(1)
-
-			loss = self.criterion(outputs, y_a=targets_a, y_b=targets_b, lam=lam)
+			loss = self.criterion(outputs, targets)
 			loss.backward()
 
 			train_loss.update(loss.detach().item())
@@ -312,7 +277,7 @@ class Trainer:
 			self.optimizer.step()
 
 			_loss, _score = train_loss.avg, train_score.avg
-			message = 'Train Step {}/{}, train_loss: {:.5f}, train_score: {:.5f	}'
+			message = 'Train Step {}/{}, train_loss: {:.5f}, train_score: {:.5f}'
 			self.info_message(message, step, len(train_loader), _loss, _score, end="\r")
 
 		return train_loss.avg, train_score.avg, int(time.time() - t)
@@ -323,17 +288,13 @@ class Trainer:
 		valid_loss = self.loss_meter()
 		valid_score = self.score_meter()
 
-		for step, batch in tqdm(enumerate(valid_loader, 1)):
+		for step, batch in enumerate(valid_loader, 1):
 			with torch.no_grad():
-				X = batch["X"].cuda()
-				targets = batch["y"].cuda()
-				inputs1, targets_a, targets_b, lam = mixup_data(X, targets.view(-1, 1), use_cuda=True)
-				inputs1 = inputs1.to(device, dtype=torch.float)
-				targets_a = targets_a.to(device, dtype=torch.float)
-				targets_b = targets_b.to(device, dtype=torch.float)
+				X = batch["X"].to(self.device)
+				targets = batch["y"].to(self.device)
 
-				outputs = self.model(inputs1).squeeze(1)
-				loss = self.criterion(outputs, y_a=targets_a, y_b=targets_b, lam=lam)
+				outputs = self.model(X).squeeze(1)
+				loss = self.criterion(outputs, targets)
 
 				valid_loss.update(loss.detach().item())
 				valid_score.update(targets, outputs)
@@ -360,11 +321,13 @@ class Trainer:
 		print(message.format(*args), end=end)
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 model = Model()
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = mixup_criterion
+criterion = torch_functional.binary_cross_entropy_with_logits
 
 trainer = Trainer(
 	model,
@@ -413,30 +376,17 @@ class DataRetriever(torch_data.Dataset):
 		file_path = convert_image_id_2_path(self.paths[index], is_train=False)
 		x = np.load(file_path)
 		image = self.__get_qtransform(x)
-		print(image.shape)
 
 		return {"X": image, "id": self.paths[index]}
 
 
-def __get_qtransform(self):
-	image = []
-	for i in range(3):
-		x = np.load("/content/Train/0/0/0/00000e74ad.npy")
-		waves = x[i] / np.max(x[i])
-		waves = torch.from_numpy(waves).float()
-		channel = self.q_transform(waves).squeeze().numpy()
-		image.append(channel)
-	print(image.shape)
-
-
-__get_qtransform()
 test_data_retriever = DataRetriever(
 	submission["id"].values,
 )
 
 test_loader = torch_data.DataLoader(
 	test_data_retriever,
-	batch_size=64,
+	batch_size=32,
 	shuffle=False,
 	num_workers=8,
 )
