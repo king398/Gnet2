@@ -8,6 +8,7 @@ import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tqdm import tqdm_notebook as tqdm
 
 
 def convert_image_id_2_path(image_id: str, is_train: bool = True) -> str:
@@ -98,6 +99,14 @@ def set_seed(seed):
 
 
 set_seed(42)
+from scipy import signal
+
+bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
+
+
+def filterSig(wave, a=aHP, b=bHP):
+	'''Apply a 20Hz high pass filter to the three events'''
+	return np.array(signal.filtfilt(b, a, wave))
 
 
 class DataRetriever(torch_data.Dataset):
@@ -124,7 +133,7 @@ class DataRetriever(torch_data.Dataset):
 
 	def __getitem__(self, index):
 		file_path = convert_image_id_2_path(self.paths[index])
-		x = np.load(file_path)
+		x = filterSig(np.load(file_path))
 		image = self.__get_qtransform(x)
 
 		y = torch.tensor(self.targets[index], dtype=torch.float)
@@ -262,7 +271,7 @@ class Trainer:
 		train_loss = self.loss_meter()
 		train_score = self.score_meter()
 
-		for step, batch in enumerate(train_loader, 1):
+		for step, batch in tqdm(enumerate(train_loader, 1)):
 			X = batch["X"].to(self.device)
 			targets = batch["y"].to(self.device)
 			self.optimizer.zero_grad()
@@ -288,7 +297,7 @@ class Trainer:
 		valid_loss = self.loss_meter()
 		valid_score = self.score_meter()
 
-		for step, batch in enumerate(valid_loader, 1):
+		for step, batch in tqdm(enumerate(valid_loader, 1)):
 			with torch.no_grad():
 				X = batch["X"].to(self.device)
 				targets = batch["y"].to(self.device)
