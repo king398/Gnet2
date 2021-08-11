@@ -90,7 +90,7 @@ class CFG:
 	debug = False
 	print_freq = 100
 	num_workers = 4
-	model_name = 'tf_efficientnet_b7_ns'
+	model_name = 'nfnet_f5'
 	scheduler = 'CosineAnnealingLR'  # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
 	epochs = 3
 	# factor=0.2 # ReduceLROnPlateau
@@ -100,7 +100,7 @@ class CFG:
 	# T_0=3 # CosineAnnealingWarmRestarts
 	lr = 1e-4
 	min_lr = 1e-6
-	batch_size = 384
+	batch_size = 32
 	weight_decay = 1e-6
 	gradient_accumulation_steps = 1
 	max_grad_norm = 1000
@@ -266,16 +266,15 @@ def get_transforms(*, data):
 
 
 class CustomModel(nn.Module):
-	def __init__(self, cfg, pretrained=False):
-		super().__init__()
-		self.cfg = cfg
-		self.model = timm.create_model(self.cfg.model_name, pretrained=pretrained, in_chans=1)
-		self.n_features = self.model.classifier.in_features
-		self.model.classifier = nn.Linear(self.n_features, self.cfg.target_size)
+
+	def __init__(self, num_classes=1, model_name='nfnet_f5', pretrained=False):
+		super(CustomModel, self).__init__()
+		self.model = timm.create_model(model_name, pretrained=pretrained, in_chans=1)
+		self.model.head.fc = nn.Linear(self.model.head.fc.in_features, num_classes)
 
 	def forward(self, x):
-		output = self.model(x)
-		return output
+		x = self.model(x)
+		return x
 
 
 class GradCAMDataset(Dataset):
@@ -478,7 +477,7 @@ def get_grad_cam(model, device, x_tensor, img, label, plot=False):
 # Train loop
 # ====================================================
 def train_loop(folds, fold):
-	if fold == 2 or fold == 3:
+	if fold == 0 or fold == 1:
 		LOGGER.info(f"========== fold: {fold} training ==========")
 
 		# ====================================================
@@ -584,21 +583,16 @@ def train_loop(folds, fold):
 # ====================================================
 # main
 # ====================================================
-
-x = 0
-
-if x == 2 or x == 3:
+def main():
 	"""
-		Prepare: 1.train
-		"""
-
+	Prepare: 1.train
+	"""
 
 	def get_result(result_df):
 		preds = result_df['preds'].values
 		labels = result_df[CFG.target_col].values
 		score = get_score(labels, preds)
 		LOGGER.info(f'Score: {score:<.4f}')
-
 
 	if CFG.train:
 		# train
@@ -655,4 +649,6 @@ if x == 2 or x == 3:
 					if count >= N:
 						break
 
-		x += 1
+
+if __name__ == '__main__':
+	main()

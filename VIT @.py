@@ -10,14 +10,10 @@ import math
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.preprocessing import image
 from random import shuffle
-from sklearn.model_selection import KFold
+from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
 import albumentations as A
-from sklearn.model_selection import KFold
-import cv2
-from scipy import signal
-import tensorflow.keras.layers as L
-
+from vit_keras import vit
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
@@ -27,6 +23,15 @@ mixed_precision.set_global_policy(policy)
 path = list(train_labels['id'])
 for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
+
+
+def aug():
+	return A.Compose([
+		A.ToFloat(),
+		A.augmentations.crops.transforms.RandomResizedCrop(height=224, width=224,
+		                                                   always_apply=True, p=1.0),
+
+	])
 
 
 def id2path(idx, is_train=True):
@@ -42,21 +47,16 @@ import torch
 from nnAudio.Spectrogram import CQT1992v2
 
 
-def increase_dimension(idx, is_train):  # in order to use efficientnet we need 3 dimension images
+def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
+                                                          hop_length=32)):  # in order to use efficientnet we need 3 dimension images
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
-	waves = filterSig(waves)
 	waves = waves / np.max(waves)
-
-	return waves
-
-
-bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
-
-
-def filterSig(waves, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, waves))  # lfilter introduces a larger spike around 20hz
+	waves = torch.from_numpy(waves).float()
+	image = transform(waves)
+	image = np.array(image)
+	image = np.transpose(image, (1, 2, 0))
+	return image
 
 
 example = np.load(path[4])
@@ -70,11 +70,12 @@ plt.show()
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=256, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=96, shuffle=True, valid=False, aug=aug()):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
 		self.valid = valid
+		self.aug = aug
 		if y is not None:
 			self.is_train = True
 		else:
@@ -90,15 +91,13 @@ class Dataset(Sequence):
 			batch_y = self.y[ids * self.batch_size: (ids + 1) * self.batch_size]
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
+		batch_X = np.stack(list_x)
+
 
 		if self.is_train:
-
-			return np.array(list_x), batch_y
-
-
-
+			return np.array(batch_X), batch_y
 		else:
-			return list_x
+			return batch_X
 
 	def on_epoch_end(self):
 		if self.shuffle and self.is_train:
@@ -109,39 +108,27 @@ class Dataset(Sequence):
 
 train_idx = train_labels['id'].values
 y = train_labels['target'].values
+x_train, x_valid, y_train, y_valid = train_test_split(train_idx, y, test_size=0.2, random_state=42, stratify=y)
+train_dataset = Dataset(x_train, y_train)
+valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
+model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+                             vit.vit_b16(image_size=224),
+                             L.Flatten(),
+                             L.Dense(32, activation='relu'),
+                             L.Dense(1, activation='sigmoid')])
+best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
+model.summary()
+lr_decayed_fn = tf.keras.experimental.CosineDecay(
+	1e-3,
+	700,
+)
 
-def model():
-	model = tf.keras.Sequential([L.InputLayer(input_shape=(3, 4096)),
-	                             ComplexMorletCWT(n_scales=128, stride=128, output='magnitude',
-	                                              data_format='channels_first', wavelet_width=8, fs=1.0, lower_freq=20,
-	                                              upper_freq=1024),
-	                             L.Permute((2, 3, 1)),
-	                             efn.EfficientNetB7(include_top=False, weights='imagenet'),
-	                             L.GlobalAveragePooling2D(),
-	                             L.Dense(32, activation='relu'),
-	                             L.Dense(1, activation='sigmoid')])
+opt = tf.keras.optimizers.Adam(0.001)
+i = 0
+print(len(train_dataset))
 
-	opt = tf.keras.optimizers.Adam(0.001)
-	model.compile(optimizer=opt,
-	              loss=tf.keras.losses.BinaryCrossentropy(from_logits=True), metrics=[tf.keras.metrics.AUC()])
-	return model
-
-
-oof_preds = []
-skf = KFold(n_splits=4, random_state=42, shuffle=True)
-fold = 0
-for train, test in skf.split(train_idx, y=y):
-	tf.keras.backend.clear_session()
-	train_dataset = Dataset(train_idx[train], y[train])
-	test_dataset = Dataset(train_idx[test], y[test], valid=True)
-	if fold == 0:
-		model = model()
-		best = tf.keras.callbacks.ModelCheckpoint(filepath='model.{epoch:02d}-{val_auc:.4f}' + ":" + str(fold),
-		                                          monitor="val_auc"),
-
-		history = model.fit(train_dataset, epochs=3, validation_data=test_dataset, callbacks=best)
-
-		oof_preds.append(history.history['val_auc'])
-	fold += 1
+model.compile(optimizer=opt,
+              loss='binary_crossentropy', metrics=[tf.keras.metrics.AUC()])
+model.fit(train_dataset, epochs=5, validation_data=valid_dataset, callbacks=best)
