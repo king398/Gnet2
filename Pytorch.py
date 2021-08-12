@@ -24,7 +24,14 @@ import torch
 from nnAudio.Spectrogram import CQT1992v2
 
 Q_TRANSFORM = CQT1992v2(sr=2048, fmin=20, fmax=1024, hop_length=32)
+from scipy import signal
 
+bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
+
+
+def filterSig(wave, a=aHP, b=bHP):
+	'''Apply a 20Hz high pass filter to the three events'''
+	return np.array(signal.filtfilt(b, a, wave))
 
 def visualize_sample_qtransform(
 		_id,
@@ -36,6 +43,7 @@ def visualize_sample_qtransform(
 	plt.figure(figsize=(16, 5))
 	for i in range(3):
 		waves = x[i] / np.max(x[i])
+		waves = filterSig(waves)
 		waves = torch.from_numpy(waves).float()
 		image = Q_TRANSFORM(waves)
 
@@ -125,6 +133,7 @@ class DataRetriever(torch_data.Dataset):
 		image = []
 		for i in range(3):
 			waves = x[i] / np.max(x[i])
+			waves = filterSig(waves)
 			waves = torch.from_numpy(waves).float()
 			channel = self.q_transform(waves).squeeze().numpy()
 			image.append(channel)
@@ -158,31 +167,31 @@ valid_data_retriever = DataRetriever(
 )
 train_loader = torch_data.DataLoader(
 	train_data_retriever,
-	batch_size=32,
+	batch_size=124,
 	shuffle=True,
-	num_workers=8,
+	num_workers=4,
 )
 
 valid_loader = torch_data.DataLoader(
 	valid_data_retriever,
-	batch_size=32,
+	batch_size=124,
 	shuffle=False,
-	num_workers=8,
+	num_workers=4,
 )
+import timm
 
+import efficientnet_pytorch
 
 class Model(nn.Module):
-	def __init__(self):
-		super().__init__()
-		self.net = efficientnet_pytorch.EfficientNet.from_pretrained("efficientnet-b7")
-		n_features = self.net._fc.in_features
-		self.net._fc = nn.Linear(in_features=n_features, out_features=1, bias=True)
-
-	def forward(self, x):
-		out = self.net(x)
-		return out
-
-
+    def __init__(self):
+        super().__init__()
+        self.net = efficientnet_pytorch.EfficientNet.from_pretrained("efficientnet-b7")
+        n_features = self.net._fc.in_features
+        self.net._fc = nn.Linear(in_features=n_features, out_features=1, bias=True)
+    
+    def forward(self, x):
+        out = self.net(x)
+        return out
 class LossMeter:
 	def __init__(self):
 		self.avg = 0

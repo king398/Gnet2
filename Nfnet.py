@@ -1,48 +1,112 @@
 import os
-from albumentations.augmentations.transforms import ToFloat
+import json
+import random
+import collections
+
 import numpy as np
 import pandas as pd
-from PIL import Image
-from matplotlib import pyplot as plt
+import cv2
+import matplotlib.pyplot as plt
 import seaborn as sns
-
-train = pd.read_csv('/content/Train/ing_labels.csv')
-test = pd.read_csv('/content/sample_submission.csv')
+from tqdm import tqdm_notebook as tqdm
 
 
-def get_train_file_path(image_id):
-	return "/content/Train/{}/{}/{}/{}.npy".format(
-		image_id[0], image_id[1], image_id[2], image_id)
+def convert_image_id_2_path(image_id: str, is_train: bool = True) -> str:
+	folder = "Train" if is_train else "test"
+	return "/content/{}/{}/{}/{}/{}.npy".format(
+		folder, image_id[0], image_id[1], image_id[2], image_id
+	)
 
 
-def get_test_file_path(image_id):
-	return "/content/Test/{}/{}/{}/{}.npy".format(
-		image_id[0], image_id[1], image_id[2], image_id)
-
-
-train['file_path'] = train['id'].apply(get_train_file_path)
-test['file_path'] = test['id'].apply(get_test_file_path)
+train_df = pd.read_csv("/content/Train/ing_labels.csv")
+train_df
 import torch
 from nnAudio.Spectrogram import CQT1992v2
 
+Q_TRANSFORM = CQT1992v2(sr=2048, fmin=20, fmax=1024, hop_length=32)
+from scipy import signal
 
-def apply_qtransform(waves, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024, hop_length=64)):
-	waves = np.hstack(waves)
-	waves = waves / np.max(waves)
-	waves = torch.from_numpy(waves).float()
-	image = transform(waves)
-	return image
+bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
 
 
-def apply_qtransform1(waves, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024, hop_length=64)):
-	waves = np.hstack(waves)
-	waves = waves / np.max(waves)
-	waves = filterSig(waves)
-	waves = torch.from_numpy(waves).float()
-	image = transform(waves)
-	return image
+def filterSig(wave, a=aHP, b=bHP):
+	'''Apply a 20Hz high pass filter to the three events'''
+	return np.array(signal.filtfilt(b, a, wave))
+
+def visualize_sample_qtransform(
+		_id,
+		target,
+		signal_names=("LIGO Hanford", "LIGO Livingston", "Virgo"),
+		sr=2048,
+):
+	x = np.load(convert_image_id_2_path(_id))
+	plt.figure(figsize=(16, 5))
+	for i in range(3):
+		waves = x[i] / np.max(x[i])
+		waves = filterSig(waves)
+		waves = torch.from_numpy(waves).float()
+		image = Q_TRANSFORM(waves)
+
+		plt.subplot(1, 3, i + 1)
+		plt.imshow(image.squeeze())
+		plt.title(signal_names[i], fontsize=14)
+
+	plt.suptitle(f"id: {_id} target: {target}", fontsize=16)
+	plt.show()
 
 
+from sklearn.metrics import roc_auc_score, roc_curve, auc
+
+list_y_true = [
+	[1., 1., 1., 1., 1., 1., 0., 0., 0., 0., 0., 0.],
+	[1., 1., 1., 1., 1., 1., 0., 0., 0., 0., 0., 0.],
+	[1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 0.],  # IMBALANCE
+]
+list_y_pred = [
+	[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+	[0.9, 0.9, 0.9, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9, 0.1, 0.1, 0.5],
+	[1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.],  # IMBALANCE
+]
+
+for y_true, y_pred in zip(list_y_true, list_y_pred):
+	fpr, tpr, _ = roc_curve(y_true, y_pred)
+	roc_auc = auc(fpr, tpr)
+
+	plt.figure(figsize=(5, 5))
+	plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc)
+	plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+	plt.xlim([-0.01, 1.0])
+	plt.ylim([0.0, 1.05])
+	plt.xlabel('False Positive Rate')
+	plt.ylabel('True Positive Rate')
+	plt.title('Receiver operating characteristic example')
+	plt.legend(loc="lower right")
+	plt.show()
+
+submission = pd.read_csv("/content/sample_submission.csv")
+submission.to_csv("submission.csv", index=False)
+import time
+
+import torch
+from torch import nn
+from torch.utils import data as torch_data
+from sklearn import model_selection as sk_model_selection
+from torch.nn import functional as torch_functional
+from torch.autograd import Variable
+import efficientnet_pytorch
+
+
+def set_seed(seed):
+	random.seed(seed)
+	os.environ["PYTHONHASHSEED"] = str(seed)
+	np.random.seed(seed)
+	torch.manual_seed(seed)
+	if torch.cuda.is_available():
+		torch.cuda.manual_seed_all(seed)
+		torch.backends.cudnn.deterministic = True
+
+
+set_seed(42)
 from scipy import signal
 
 bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
@@ -53,223 +117,75 @@ def filterSig(wave, a=aHP, b=bHP):
 	return np.array(signal.filtfilt(b, a, wave))
 
 
-for i in range(1):
-	waves = filterSig(np.load(train.loc[i, 'file_path']))
-	image = apply_qtransform(waves)
-	target = train.loc[i, 'target']
-	plt.imshow(image[0])
-	plt.title(f"target: {target}")
-	plt.show()
-for i in range(1):
-	waves = np.load(train.loc[i, 'file_path'])
-	image = apply_qtransform(waves)
-	target = train.loc[i, 'target']
-	plt.imshow(image[0])
-	plt.title(f"target: {target}")
-	plt.show()
-for i in range(1):
-	waves = filterSig(np.load(train.loc[i, 'file_path']))
-	image = apply_qtransform1(waves)
-	target = train.loc[i, 'target']
-	plt.imshow(image[0])
-	plt.title(f"target: {target}")
-	plt.show()
-train['target'].hist()
-# ====================================================
-# Directory settings
-# ====================================================
-import os
+class DataRetriever(torch_data.Dataset):
+	def __init__(self, paths, targets):
+		self.paths = paths
+		self.targets = targets
 
-OUTPUT_DIR = './'
-if not os.path.exists(OUTPUT_DIR):
-	os.makedirs(OUTPUT_DIR)
-
-
-class CFG:
-	apex = True
-	debug = False
-	print_freq = 100
-	num_workers = 4
-	model_name = 'nfnet_f5'
-	scheduler = 'CosineAnnealingLR'  # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-	epochs = 3
-	# factor=0.2 # ReduceLROnPlateau
-	# patience=4 # ReduceLROnPlateau
-	# eps=1e-6 # ReduceLROnPlateau
-	T_max = 3  # CosineAnnealingLR
-	# T_0=3 # CosineAnnealingWarmRestarts
-	lr = 1e-4
-	min_lr = 1e-6
-	batch_size = 32
-	weight_decay = 1e-6
-	gradient_accumulation_steps = 1
-	max_grad_norm = 1000
-	qtransform_params = {"sr": 2048, "fmin": 20, "fmax": 1024, "hop_length": 32, "bins_per_octave": 8}
-	seed = 42
-	target_size = 1
-	target_col = 'target'
-	n_fold = 5
-	trn_fold = [0]  # [0, 1, 2, 3, 4]
-	train = True
-	grad_cam = True
-
-
-if CFG.debug:
-	CFG.epochs = 1
-	train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
-# ====================================================
-# Library
-# ====================================================
-import sys
-
-sys.path.append('../input/pytorch-image-models/pytorch-image-models-master')
-
-import os
-import math
-import time
-import random
-import shutil
-from pathlib import Path
-from contextlib import contextmanager
-from collections import defaultdict, Counter
-import scipy as sp
-import numpy as np
-import pandas as pd
-
-from sklearn import preprocessing
-from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold, GroupKFold, KFold
-
-from tqdm.auto import tqdm
-from functools import partial
-
-import cv2
-from PIL import Image
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam, SGD
-import torchvision.models as models
-from torch.nn.parameter import Parameter
-from torch.utils.data import DataLoader, Dataset
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
-
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from albumentations import ImageOnlyTransform
-
-from pytorch_grad_cam.utils.image import show_cam_on_image
-from pytorch_grad_cam import GradCAM, ScoreCAM, GradCAMPlusPlus, AblationCAM, XGradCAM, EigenCAM
-
-import timm
-
-from torch.cuda.amp import autocast, GradScaler
-
-import warnings
-
-warnings.filterwarnings('ignore')
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-
-# ====================================================
-# Utils
-# ====================================================
-def get_score(y_true, y_pred):
-	score = roc_auc_score(y_true, y_pred)
-	return score
-
-
-def init_logger(log_file=OUTPUT_DIR + 'train.log'):
-	from logging import getLogger, INFO, FileHandler, Formatter, StreamHandler
-	logger = getLogger(__name__)
-	logger.setLevel(INFO)
-	handler1 = StreamHandler()
-	handler1.setFormatter(Formatter("%(message)s"))
-	handler2 = FileHandler(filename=log_file)
-	handler2.setFormatter(Formatter("%(message)s"))
-	logger.addHandler(handler1)
-	logger.addHandler(handler2)
-	return logger
-
-
-LOGGER = init_logger()
-
-
-def seed_torch(seed=42):
-	random.seed(seed)
-	os.environ['PYTHONHASHSEED'] = str(seed)
-	np.random.seed(seed)
-	torch.manual_seed(seed)
-	torch.cuda.manual_seed(seed)
-	torch.backends.cudnn.deterministic = True
-
-
-seed_torch(seed=CFG.seed)
-Fold = StratifiedKFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-for n, (train_index, val_index) in enumerate(Fold.split(train, train[CFG.target_col])):
-	train.loc[val_index, 'fold'] = int(n)
-train['fold'] = train['fold'].astype(int)
-
-
-# ====================================================
-# Dataset
-# ====================================================
-class TrainDataset(Dataset):
-	def __init__(self, df, transform=None):
-		self.df = df
-		self.file_names = df['file_path'].values
-		self.labels = df[CFG.target_col].values
-		self.wave_transform = CQT1992v2(**CFG.qtransform_params)
-		self.transform = transform
+		self.q_transform = CQT1992v2(
+			sr=2048, fmin=20, fmax=1024, hop_length=32
+		)
 
 	def __len__(self):
-		return len(self.df)
+		return len(self.paths)
 
-	def apply_qtransform(self, waves, transform):
-		waves = np.hstack(waves)
-		waves = waves / np.max(waves)
-		waves = torch.from_numpy(waves).float()
-		image = transform(waves)
-		return image
+	def __get_qtransform(self, x):
+		image = []
+		for i in range(3):
+			waves = x[i] / np.max(x[i])
+			waves = filterSig(waves)
+			waves = torch.from_numpy(waves).float()
+			channel = self.q_transform(waves).squeeze().numpy()
+			image.append(channel)
 
-	def __getitem__(self, idx):
-		file_path = self.file_names[idx]
-		waves = np.load(file_path)
-		image = self.apply_qtransform(waves, self.wave_transform)
-		image = image.squeeze().numpy()
-		if self.transform:
-			image = self.transform(image=image)['image']
-		label = torch.tensor(self.labels[idx]).float()
-		return image, label
+		return torch.tensor(image).float()
 
+	def __getitem__(self, index):
+		file_path = convert_image_id_2_path(self.paths[index])
+		x = filterSig(np.load(file_path))
+		image = self.__get_qtransform(x)
 
-def get_transforms(*, data):
-	if data == 'train':
-		return A.Compose([
+		y = torch.tensor(self.targets[index], dtype=torch.float)
 
-			ToTensorV2(),
-		])
-
-	elif data == 'valid':
-		return A.Compose([
-			A.ToFloat(),
-
-			ToTensorV2(),
-		])
+		return {"X": image, "y": y}
 
 
-# ====================================================
-# MODEL
-# ====================================================
+df_train, df_valid = sk_model_selection.train_test_split(
+	train_df,
+	test_size=0.2,
+	random_state=42,
+	stratify=train_df["target"],
+)
+train_data_retriever = DataRetriever(
+	df_train["id"].values,
+	df_train["target"].values,
+)
+
+valid_data_retriever = DataRetriever(
+	df_valid["id"].values,
+	df_valid["target"].values,
+)
+train_loader = torch_data.DataLoader(
+	train_data_retriever,
+	batch_size=32,
+	shuffle=True,
+	num_workers=8,
+)
+
+valid_loader = torch_data.DataLoader(
+	valid_data_retriever,
+	batch_size=32,
+	shuffle=False,
+	num_workers=8,
+)
+import timm
 
 
-class CustomModel(nn.Module):
+class Model(nn.Module):
 
-	def __init__(self, num_classes=1, model_name='nfnet_f5', pretrained=False):
+	def __init__(self, num_classes=1, model_name='nfnet_f1', pretrained=True):
 		super(CustomModel, self).__init__()
-		self.model = timm.create_model(model_name, pretrained=pretrained, in_chans=1)
+		self.model = timm.create_model(model_name, pretrained=pretrained, in_chans=3)
 		self.model.head.fc = nn.Linear(self.model.head.fc.in_features, num_classes)
 
 	def forward(self, x):
@@ -277,378 +193,229 @@ class CustomModel(nn.Module):
 		return x
 
 
-class GradCAMDataset(Dataset):
-	def __init__(self, df):
-		self.df = df
-		self.image_ids = df['id'].values
-		self.file_names = df['file_path'].values
-		self.labels = df[CFG.target_col].values
-		self.wave_transform = CQT1992v2(**CFG.qtransform_params)
-		self.transform = get_transforms(data='valid')
+class LossMeter:
+	def __init__(self):
+		self.avg = 0
+		self.n = 0
+
+	def update(self, val):
+		self.n += 1
+		# incremental update
+		self.avg = val / self.n + (self.n - 1) / self.n * self.avg
+
+
+class AccMeter:
+	def __init__(self):
+		self.avg = 0
+		self.n = 0
+
+	def update(self, y_true, y_pred):
+		y_true = y_true.cpu().numpy().astype(int)
+		y_pred = y_pred.cpu().numpy() >= 0
+		last_n = self.n
+		self.n += len(y_true)
+		true_count = np.sum(y_true == y_pred)
+		# incremental update
+		self.avg = true_count / self.n + last_n / self.n * self.avg
+
+
+class Trainer:
+	def __init__(
+			self,
+			model,
+			device,
+			optimizer,
+			criterion,
+			loss_meter,
+			score_meter
+	):
+		self.model = model
+		self.device = device
+		self.optimizer = optimizer
+		self.criterion = criterion
+		self.loss_meter = loss_meter
+		self.score_meter = score_meter
+
+		self.best_valid_score = -np.inf
+		self.n_patience = 0
+
+		self.messages = {
+			"epoch": "[Epoch {}: {}] loss: {:.5f}, score: {:.5f}, time: {} s",
+			"checkpoint": "The score improved from {:.5f} to {:.5f}. Save model to '{}'",
+			"patience": "\nValid score didn't improve last {} epochs."
+		}
+
+	def fit(self, epochs, train_loader, valid_loader, save_path, patience):
+		for n_epoch in range(1, epochs + 1):
+			self.info_message("EPOCH: {}", n_epoch)
+
+			train_loss, train_score, train_time = self.train_epoch(train_loader)
+			valid_loss, valid_score, valid_time = self.valid_epoch(valid_loader)
+
+			self.info_message(
+				self.messages["epoch"], "Train", n_epoch, train_loss, train_score, train_time
+			)
+
+			self.info_message(
+				self.messages["epoch"], "Valid", n_epoch, valid_loss, valid_score, valid_time
+			)
+
+			if True:
+				#             if self.best_valid_score < valid_score:
+				self.info_message(
+					self.messages["checkpoint"], self.best_valid_score, valid_score, save_path
+				)
+				self.best_valid_score = valid_score
+				self.save_model(n_epoch, save_path)
+				self.n_patience = 0
+			else:
+				self.n_patience += 1
+
+			if self.n_patience >= patience:
+				self.info_message(self.messages["patience"], patience)
+				break
+
+	def train_epoch(self, train_loader):
+		self.model.train()
+		t = time.time()
+		train_loss = self.loss_meter()
+		train_score = self.score_meter()
+
+		for step, batch in tqdm(enumerate(train_loader, 1)):
+			X = batch["X"].to(self.device)
+			targets = batch["y"].to(self.device)
+			self.optimizer.zero_grad()
+			outputs = self.model(X).squeeze(1)
+
+			loss = self.criterion(outputs, targets)
+			loss.backward()
+
+			train_loss.update(loss.detach().item())
+			train_score.update(targets, outputs.detach())
+
+			self.optimizer.step()
+
+			_loss, _score = train_loss.avg, train_score.avg
+			message = 'Train Step {}/{}, train_loss: {:.5f}, train_score: {:.5f}'
+			self.info_message(message, step, len(train_loader), _loss, _score, end="\r")
+
+		return train_loss.avg, train_score.avg, int(time.time() - t)
+
+	def valid_epoch(self, valid_loader):
+		self.model.eval()
+		t = time.time()
+		valid_loss = self.loss_meter()
+		valid_score = self.score_meter()
+
+		for step, batch in tqdm(enumerate(valid_loader, 1)):
+			with torch.no_grad():
+				X = batch["X"].to(self.device)
+				targets = batch["y"].to(self.device)
+
+				outputs = self.model(X).squeeze(1)
+				loss = self.criterion(outputs, targets)
+
+				valid_loss.update(loss.detach().item())
+				valid_score.update(targets, outputs)
+
+			_loss, _score = valid_loss.avg, valid_score.avg
+			message = 'Valid Step {}/{}, valid_loss: {:.5f}, valid_score: {:.5f}'
+			self.info_message(message, step, len(valid_loader), _loss, _score, end="\r")
+
+		return valid_loss.avg, valid_score.avg, int(time.time() - t)
+
+	def save_model(self, n_epoch, save_path):
+		torch.save(
+			{
+				"model_state_dict": self.model.state_dict(),
+				"optimizer_state_dict": self.optimizer.state_dict(),
+				"best_valid_score": self.best_valid_score,
+				"n_epoch": n_epoch,
+			},
+			save_path,
+		)
+
+	@staticmethod
+	def info_message(message, *args, end="\n"):
+		print(message.format(*args), end=end)
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = Model()
+model.to(device)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+criterion = torch_functional.binary_cross_entropy_with_logits
+
+trainer = Trainer(
+	model,
+	device,
+	optimizer,
+	criterion,
+	LossMeter,
+	AccMeter
+)
+
+history = trainer.fit(
+	3,
+	train_loader,
+	valid_loader,
+	"best-model.pth",
+	100,
+)
+checkpoint = torch.load("best-model.pth")
+
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval();
+
+
+class DataRetriever(torch_data.Dataset):
+	def __init__(self, paths):
+		self.paths = paths
+
+		self.q_transform = CQT1992v2(
+			sr=2048, fmin=20, fmax=1024, hop_length=32
+		)
 
 	def __len__(self):
-		return len(self.df)
+		return len(self.paths)
 
-	def apply_qtransform(self, waves, transform):
-		waves = np.hstack(waves)
-		waves = waves / np.max(waves)
-		waves = torch.from_numpy(waves).float()
-		image = transform(waves)
-		return image
+	def __get_qtransform(self, x):
+		image = []
+		for i in range(3):
+			waves = x[i] / np.max(x[i])
+			waves = torch.from_numpy(waves).float()
+			channel = self.q_transform(waves).squeeze().numpy()
+			image.append(channel)
 
-	def __getitem__(self, idx):
-		image_id = self.image_ids[idx]
-		file_path = self.file_names[idx]
-		waves = filterSig(np.load(file_path))
-		image = self.apply_qtransform(waves, self.wave_transform)
-		image = image.squeeze().numpy()
-		vis_image = image.copy()
-		if self.transform:
-			image = self.transform(image=image)['image']
-		label = torch.tensor(self.labels[idx]).float()
-		return image_id, image, vis_image, label
+		return torch.tensor(image).float()
+
+	def __getitem__(self, index):
+		file_path = convert_image_id_2_path(self.paths[index], is_train=False)
+		x = np.load(file_path)
+		image = self.__get_qtransform(x)
+
+		return {"X": image, "id": self.paths[index]}
 
 
-# ====================================================
-# Helper functions
-# ====================================================
-class AverageMeter(object):
-	"""Computes and stores the average and current value"""
+test_data_retriever = DataRetriever(
+	submission["id"].values,
+)
 
-	def __init__(self):
-		self.reset()
+test_loader = torch_data.DataLoader(
+	test_data_retriever,
+	batch_size=32,
+	shuffle=False,
+	num_workers=8,
+)
+y_pred = []
+ids = []
 
-	def reset(self):
-		self.val = 0
-		self.avg = 0
-		self.sum = 0
-		self.count = 0
-
-	def update(self, val, n=1):
-		self.val = val
-		self.sum += val * n
-		self.count += n
-		self.avg = self.sum / self.count
-
-
-def asMinutes(s):
-	m = math.floor(s / 60)
-	s -= m * 60
-	return '%dm %ds' % (m, s)
-
-
-def timeSince(since, percent):
-	now = time.time()
-	s = now - since
-	es = s / (percent)
-	rs = es - s
-	return '%s (remain %s)' % (asMinutes(s), asMinutes(rs))
-
-
-def train_fn(fold, train_loader, model, criterion, optimizer, epoch, scheduler, device):
-	if CFG.apex:
-		scaler = GradScaler()
-	batch_time = AverageMeter()
-	data_time = AverageMeter()
-	losses = AverageMeter()
-	scores = AverageMeter()
-	# switch to train mode
-	model.train()
-	start = end = time.time()
-	global_step = 0
-	for step, (images, labels) in enumerate(train_loader):
-		# measure data loading time
-		data_time.update(time.time() - end)
-		images = images.to(device)
-		labels = labels.to(device)
-		batch_size = labels.size(0)
-		if CFG.apex:
-			with autocast():
-				y_preds = model(images)
-				loss = criterion(y_preds.view(-1), labels)
-		else:
-			y_preds = model(images)
-			loss = criterion(y_preds.view(-1), labels)
-		# record loss
-		losses.update(loss.item(), batch_size)
-		if CFG.gradient_accumulation_steps > 1:
-			loss = loss / CFG.gradient_accumulation_steps
-		if CFG.apex:
-			scaler.scale(loss).backward()
-		else:
-			loss.backward()
-		grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), CFG.max_grad_norm)
-		if (step + 1) % CFG.gradient_accumulation_steps == 0:
-			if CFG.apex:
-				scaler.step(optimizer)
-				scaler.update()
-			else:
-				optimizer.step()
-			optimizer.zero_grad()
-			global_step += 1
-		# measure elapsed time
-		batch_time.update(time.time() - end)
-		end = time.time()
-		if step % CFG.print_freq == 0 or step == (len(train_loader) - 1):
-			print('Epoch: [{0}][{1}/{2}] '
-			      'Elapsed {remain:s} '
-			      'Loss: {loss.val:.4f}({loss.avg:.4f}) '
-			      'Grad: {grad_norm:.4f}  '
-			      'LR: {lr:.6f}  '
-			      .format(epoch + 1, step, len(train_loader),
-			              remain=timeSince(start, float(step + 1) / len(train_loader)),
-			              loss=losses,
-			              grad_norm=grad_norm,
-			              lr=scheduler.get_lr()[0]))
-
-	return losses.avg
-
-
-def valid_fn(valid_loader, model, criterion, device):
-	batch_time = AverageMeter()
-	data_time = AverageMeter()
-	losses = AverageMeter()
-	scores = AverageMeter()
-	# switch to evaluation mode
-	model.eval()
-	preds = []
-	start = end = time.time()
-	for step, (images, labels) in enumerate(valid_loader):
-		# measure data loading time
-		data_time.update(time.time() - end)
-		images = images.to(device)
-		labels = labels.to(device)
-		batch_size = labels.size(0)
-		# compute loss
-		with torch.no_grad():
-			y_preds = model(images)
-		loss = criterion(y_preds.view(-1), labels)
-		losses.update(loss.item(), batch_size)
-		# record accuracy
-		preds.append(y_preds.sigmoid().to('cpu').numpy())
-		if CFG.gradient_accumulation_steps > 1:
-			loss = loss / CFG.gradient_accumulation_steps
-		# measure elapsed time
-		batch_time.update(time.time() - end)
-		end = time.time()
-		if step % CFG.print_freq == 0 or step == (len(valid_loader) - 1):
-			print('EVAL: [{0}/{1}] '
-			      'Elapsed {remain:s} '
-			      'Loss: {loss.val:.4f}({loss.avg:.4f}) '
-			      .format(step, len(valid_loader),
-			              loss=losses,
-			              remain=timeSince(start, float(step + 1) / len(valid_loader))))
-	predictions = np.concatenate(preds)
-	return losses.avg, predictions
-
-
-def get_grad_cam(model, device, x_tensor, img, label, plot=False):
-	result = {"vis": None, "img": None, "prob": None, "label": None}
-
-	# model prob
+for e, batch in enumerate(test_loader):
+	print(f"{e}/{len(test_loader)}", end="\r")
 	with torch.no_grad():
-		prob = model(x_tensor.unsqueeze(0).to(device))
-	prob = np.concatenate(prob.sigmoid().to('cpu').numpy())[0]
-
-	# grad-cam
-	target_layer = model.model.conv_head
-	cam = GradCAM(model=model, target_layer=target_layer, use_cuda=True)
-	output = cam(input_tensor=x_tensor.unsqueeze(0))
-	try:
-		vis = show_cam_on_image(x_tensor.numpy().transpose((1, 2, 0)), output[0])
-	except:
-		return result
-
-	# plot result
-	if plot:
-		fig, axes = plt.subplots(figsize=(16, 12), ncols=2)
-		axes[0].imshow(vis)
-		axes[0].set_title(f"prob={prob:.4f}")
-		axes[1].imshow(img)
-		axes[1].set_title(f"target={label}")
-		plt.show()
-
-	result = {"vis": vis, "img": img, "prob": prob, "label": label}
-
-	return result
-
-
-# ====================================================
-# Train loop
-# ====================================================
-def train_loop(folds, fold):
-	if fold == 0 or fold == 1:
-		LOGGER.info(f"========== fold: {fold} training ==========")
-
-		# ====================================================
-		# loader
-		# ====================================================
-		trn_idx = folds[folds['fold'] != fold].index
-		val_idx = folds[folds['fold'] == fold].index
-
-		train_folds = folds.loc[trn_idx].reset_index(drop=True)
-		valid_folds = folds.loc[val_idx].reset_index(drop=True)
-		valid_labels = valid_folds[CFG.target_col].values
-
-		train_dataset = TrainDataset(train_folds, transform=get_transforms(data='train'))
-		valid_dataset = TrainDataset(valid_folds, transform=get_transforms(data='train'))
-
-		train_loader = DataLoader(train_dataset,
-		                          batch_size=CFG.batch_size,
-		                          shuffle=True,
-		                          num_workers=CFG.num_workers, pin_memory=True, drop_last=True)
-		valid_loader = DataLoader(valid_dataset,
-		                          batch_size=CFG.batch_size * 2,
-		                          shuffle=False,
-		                          num_workers=CFG.num_workers, pin_memory=True, drop_last=False)
-
-		# ====================================================
-		# scheduler
-		# ====================================================
-		def get_scheduler(optimizer):
-			if CFG.scheduler == 'ReduceLROnPlateau':
-				scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=CFG.factor, patience=CFG.patience,
-				                              verbose=True,
-				                              eps=CFG.eps)
-			elif CFG.scheduler == 'CosineAnnealingLR':
-				scheduler = CosineAnnealingLR(optimizer, T_max=CFG.T_max, eta_min=CFG.min_lr, last_epoch=-1)
-			elif CFG.scheduler == 'CosineAnnealingWarmRestarts':
-				scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=CFG.T_0, T_mult=1, eta_min=CFG.min_lr,
-				                                        last_epoch=-1)
-			return scheduler
-
-		# ====================================================
-		# model & optimizer
-		# ====================================================
-		model = CustomModel(CFG, pretrained=True)
-		model.to(device)
-
-		optimizer = Adam(model.parameters(), lr=CFG.lr, weight_decay=CFG.weight_decay, amsgrad=False)
-		scheduler = get_scheduler(optimizer)
-
-		# ====================================================
-		# loop
-		# ====================================================
-		criterion = nn.BCEWithLogitsLoss()
-
-		best_score = 0.
-		best_loss = np.inf
-
-		for epoch in range(CFG.epochs):
-
-			start_time = time.time()
-
-			# train
-			avg_loss = train_fn(fold, train_loader, model, criterion, optimizer, epoch, scheduler, device)
-
-			# eval
-			avg_val_loss, preds = valid_fn(valid_loader, model, criterion, device)
-
-			if isinstance(scheduler, ReduceLROnPlateau):
-				scheduler.step(avg_val_loss)
-			elif isinstance(scheduler, CosineAnnealingLR):
-				scheduler.step()
-			elif isinstance(scheduler, CosineAnnealingWarmRestarts):
-				scheduler.step()
-
-			# scoring
-			score = get_score(valid_labels, preds)
-
-			elapsed = time.time() - start_time
-
-			LOGGER.info(
-				f'Epoch {epoch + 1} - avg_train_loss: {avg_loss:.4f}  avg_val_loss: {avg_val_loss:.4f}  time: {elapsed:.0f}s')
-			LOGGER.info(f'Epoch {epoch + 1} - Score: {score:.4f}')
-
-			if score > best_score:
-				best_score = score
-				LOGGER.info(f'Epoch {epoch + 1} - Save Best Score: {best_score:.4f} Model')
-				torch.save({'model': model.state_dict(),
-				            'preds': preds},
-				           OUTPUT_DIR + f'{CFG.model_name}_fold{fold}_best_score.pth')
-
-			if avg_val_loss < best_loss:
-				best_loss = avg_val_loss
-				LOGGER.info(f'Epoch {epoch + 1} - Save Best Loss: {best_loss:.4f} Model')
-				torch.save({'model': model.state_dict(),
-				            'preds': preds},
-				           OUTPUT_DIR + f'{CFG.model_name}_fold{fold}_best_loss.pth')
-
-		valid_folds['preds'] = torch.load(OUTPUT_DIR + f'{CFG.model_name}_fold{fold}_best_score.pth',
-		                                  map_location=torch.device('cpu'))['preds']
-
-		return valid_folds
-
-
-# ====================================================
-# main
-# ====================================================
-def main():
-	"""
-	Prepare: 1.train
-	"""
-
-	def get_result(result_df):
-		preds = result_df['preds'].values
-		labels = result_df[CFG.target_col].values
-		score = get_score(labels, preds)
-		LOGGER.info(f'Score: {score:<.4f}')
-
-	if CFG.train:
-		# train
-		oof_df = pd.DataFrame()
-		for fold in range(CFG.n_fold):
-			if fold in CFG.trn_fold:
-				_oof_df = train_loop(train, fold)
-				oof_df = pd.concat([oof_df, _oof_df])
-				LOGGER.info(f"========== fold: {fold} result ==========")
-				get_result(_oof_df)
-		# CV result
-		LOGGER.info(f"========== CV ==========")
-		get_result(oof_df)
-		# save result
-		oof_df.to_csv(OUTPUT_DIR + 'oof_df.csv', index=False)
-
-	if CFG.grad_cam:
-		N = 5
-		wandb_table = wandb.Table(columns=["id", "target", "prob", "image", "grad_cam_image"])
-		for fold in range(CFG.n_fold):
-			if fold in CFG.trn_fold:
-				# load model
-				model = CustomModel(CFG, pretrained=False)
-				state = torch.load(OUTPUT_DIR + f'{CFG.model_name}_fold{fold}_best_loss.pth',
-				                   map_location=torch.device('cpu'))['model']
-				model.load_state_dict(state)
-				model.to(device)
-				model.eval()
-				# load oof
-				oof = pd.read_csv(OUTPUT_DIR + 'oof_df.csv')
-				oof = oof[oof['fold'] == fold].reset_index(drop=True)
-				# grad-cam (oof ascending=False)
-				count = 0
-				oof = oof.sort_values('preds', ascending=False)
-				valid_dataset = GradCAMDataset(oof)
-				for i in range(len(valid_dataset)):
-					image_id, x_tensor, img, label = valid_dataset[i]
-					result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
-					if result["vis"] is not None:
-						count += 1
-
-					if count >= N:
-						break
-				# grad-cam (oof ascending=True)
-				count = 0
-				oof = oof.sort_values('preds', ascending=True)
-				valid_dataset = GradCAMDataset(oof)
-				for i in range(len(valid_dataset)):
-					image_id, x_tensor, img, label = valid_dataset[i]
-					result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
-					if result["vis"] is not None:
-						count += 1
-
-					if count >= N:
-						break
-
-
-if __name__ == '__main__':
-	main()
+		y_pred.extend(torch.sigmoid(model(batch["X"].to(device))).cpu().numpy().squeeze())
+		ids.extend(batch["id"])
+submission = pd.DataFrame({"id": ids, "target": y_pred})
+submission.to_csv("model_submission.csv", index=False)

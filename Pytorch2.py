@@ -229,6 +229,7 @@ class TrainDataset(Dataset):
 
 	def apply_qtransform(self, waves, transform):
 		waves = np.hstack(waves)
+		waves = filterSig(waves)
 		waves = waves / np.max(waves)
 		waves = torch.from_numpy(waves).float()
 		image = transform(waves)
@@ -277,7 +278,12 @@ class CustomModel(nn.Module):
 		output = self.model(x)
 		return output
 
+bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
 
+
+def filterSig(wave, a=aHP, b=bHP):
+	'''Apply a 20Hz high pass filter to the three events'''
+	return np.array(signal.filtfilt(b, a, wave))
 class GradCAMDataset(Dataset):
 	def __init__(self, df):
 		self.df = df
@@ -292,6 +298,7 @@ class GradCAMDataset(Dataset):
 
 	def apply_qtransform(self, waves, transform):
 		waves = np.hstack(waves)
+		waves = filterSig(waves)
 		waves = waves / np.max(waves)
 		waves = torch.from_numpy(waves).float()
 		image = transform(waves)
@@ -478,7 +485,7 @@ def get_grad_cam(model, device, x_tensor, img, label, plot=False):
 # Train loop
 # ====================================================
 def train_loop(folds, fold):
-	if fold == 2 or fold == 3:
+	
 		LOGGER.info(f"========== fold: {fold} training ==========")
 
 		# ====================================================
@@ -582,77 +589,71 @@ def train_loop(folds, fold):
 
 
 # ====================================================
-# main
-# ====================================================
+def main():
 
-x = 0
+    """
+    Prepare: 1.train 
+    """
 
-if x == 2 or x == 3:
-	"""
-		Prepare: 1.train
-		"""
+    def get_result(result_df):
+        preds = result_df['preds'].values
+        labels = result_df[CFG.target_col].values
+        score = get_score(labels, preds)
+        LOGGER.info(f'Score: {score:<.4f}')
+    
+    if CFG.train:
+        # train 
+        oof_df = pd.DataFrame()
+        for fold in range(CFG.n_fold):
+            if fold in CFG.trn_fold:
+                _oof_df = train_loop(train, fold)
+                oof_df = pd.concat([oof_df, _oof_df])
+                LOGGER.info(f"========== fold: {fold} result ==========")
+                get_result(_oof_df)
+        # CV result
+        LOGGER.info(f"========== CV ==========")
+        get_result(oof_df)
+        # save result
+        oof_df.to_csv(OUTPUT_DIR+'oof_df.csv', index=False)
+    
+    if CFG.grad_cam:
+        N = 5
+        for fold in range(CFG.n_fold):
+            if fold in CFG.trn_fold:
+                # load model
+                model = CustomModel(CFG, pretrained=False)
+                state = torch.load(OUTPUT_DIR+f'{CFG.model_name}_fold{fold}_best_loss.pth', 
+                                   map_location=torch.device('cpu'))['model']
+                model.load_state_dict(state)
+                model.to(device)
+                model.eval()
+                # load oof
+                oof = pd.read_csv(OUTPUT_DIR+'oof_df.csv')
+                oof = oof[oof['fold'] == fold].reset_index(drop=True)
+                # grad-cam (oof ascending=False)
+                count = 0
+                oof = oof.sort_values('preds', ascending=False)
+                valid_dataset = GradCAMDataset(oof)
+                for i in range(len(valid_dataset)):
+                    image_id, x_tensor, img, label = valid_dataset[i]
+                    result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
+                    if result["vis"] is not None:
+                        count += 1
 
+                    if count >= N:
+                        break
+                # grad-cam (oof ascending=True)
+                count = 0
+                oof = oof.sort_values('preds', ascending=True)
+                valid_dataset = GradCAMDataset(oof)
+                for i in range(len(valid_dataset)):
+                    image_id, x_tensor, img, label = valid_dataset[i]
+                    result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
+                    if result["vis"] is not None:
+                        count += 1
 
-	def get_result(result_df):
-		preds = result_df['preds'].values
-		labels = result_df[CFG.target_col].values
-		score = get_score(labels, preds)
-		LOGGER.info(f'Score: {score:<.4f}')
-
-
-	if CFG.train:
-		# train
-		oof_df = pd.DataFrame()
-		for fold in range(CFG.n_fold):
-			if fold in CFG.trn_fold:
-				_oof_df = train_loop(train, fold)
-				oof_df = pd.concat([oof_df, _oof_df])
-				LOGGER.info(f"========== fold: {fold} result ==========")
-				get_result(_oof_df)
-		# CV result
-		LOGGER.info(f"========== CV ==========")
-		get_result(oof_df)
-		# save result
-		oof_df.to_csv(OUTPUT_DIR + 'oof_df.csv', index=False)
-
-	if CFG.grad_cam:
-		N = 5
-		wandb_table = wandb.Table(columns=["id", "target", "prob", "image", "grad_cam_image"])
-		for fold in range(CFG.n_fold):
-			if fold in CFG.trn_fold:
-				# load model
-				model = CustomModel(CFG, pretrained=False)
-				state = torch.load(OUTPUT_DIR + f'{CFG.model_name}_fold{fold}_best_loss.pth',
-				                   map_location=torch.device('cpu'))['model']
-				model.load_state_dict(state)
-				model.to(device)
-				model.eval()
-				# load oof
-				oof = pd.read_csv(OUTPUT_DIR + 'oof_df.csv')
-				oof = oof[oof['fold'] == fold].reset_index(drop=True)
-				# grad-cam (oof ascending=False)
-				count = 0
-				oof = oof.sort_values('preds', ascending=False)
-				valid_dataset = GradCAMDataset(oof)
-				for i in range(len(valid_dataset)):
-					image_id, x_tensor, img, label = valid_dataset[i]
-					result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
-					if result["vis"] is not None:
-						count += 1
-
-					if count >= N:
-						break
-				# grad-cam (oof ascending=True)
-				count = 0
-				oof = oof.sort_values('preds', ascending=True)
-				valid_dataset = GradCAMDataset(oof)
-				for i in range(len(valid_dataset)):
-					image_id, x_tensor, img, label = valid_dataset[i]
-					result = get_grad_cam(model, device, x_tensor, img, label, plot=True)
-					if result["vis"] is not None:
-						count += 1
-
-					if count >= N:
-						break
-
-		x += 1
+                    if count >= N:
+                        break
+    
+if __name__ == '__main__':
+    main()
