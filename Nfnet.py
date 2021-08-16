@@ -29,9 +29,6 @@ from scipy import signal
 bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
 
 
-def filterSig(wave, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, wave))
 
 def visualize_sample_qtransform(
 		_id,
@@ -43,7 +40,6 @@ def visualize_sample_qtransform(
 	plt.figure(figsize=(16, 5))
 	for i in range(3):
 		waves = x[i] / np.max(x[i])
-		waves = filterSig(waves)
 		waves = torch.from_numpy(waves).float()
 		image = Q_TRANSFORM(waves)
 
@@ -112,9 +108,7 @@ from scipy import signal
 bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
 
 
-def filterSig(wave, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, wave))
+
 
 
 class DataRetriever(torch_data.Dataset):
@@ -133,7 +127,6 @@ class DataRetriever(torch_data.Dataset):
 		image = []
 		for i in range(3):
 			waves = x[i] / np.max(x[i])
-			waves = filterSig(waves)
 			waves = torch.from_numpy(waves).float()
 			channel = self.q_transform(waves).squeeze().numpy()
 			image.append(channel)
@@ -142,7 +135,7 @@ class DataRetriever(torch_data.Dataset):
 
 	def __getitem__(self, index):
 		file_path = convert_image_id_2_path(self.paths[index])
-		x = filterSig(np.load(file_path))
+		x = np.load(file_path)
 		image = self.__get_qtransform(x)
 
 		y = torch.tensor(self.targets[index], dtype=torch.float)
@@ -167,7 +160,7 @@ valid_data_retriever = DataRetriever(
 )
 train_loader = torch_data.DataLoader(
 	train_data_retriever,
-	batch_size=32,
+	batch_size=128,
 	shuffle=True,
 	num_workers=8,
 )
@@ -184,7 +177,7 @@ import timm
 class Model(nn.Module):
 
 	def __init__(self, num_classes=1, model_name='nfnet_f1', pretrained=True):
-		super(CustomModel, self).__init__()
+		super(Model, self).__init__()
 		self.model = timm.create_model(model_name, pretrained=pretrained, in_chans=3)
 		self.model.head.fc = nn.Linear(self.model.head.fc.in_features, num_classes)
 

@@ -13,6 +13,7 @@ from random import shuffle
 from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
 import albumentations as A
+from scipy.fft import fft
 
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
@@ -23,52 +24,6 @@ mixed_precision.set_global_policy(policy)
 path = list(train_labels['id'])
 for i in range(len(path)):
 	path[i] = '/content/Train/' + path[i][0] + '/' + path[i][1] + '/' + path[i][2] + '/' + path[i] + '.npy'
-
-
-def cutmix(image, label, PROBABILITY=1.0):
-	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
-	# output - a batch of images with cutmix applied
-	DIM = 128
-	CLASSES = 2
-
-	imgs = [];
-	labs = []
-	for j in range(len(image)):
-		# DO CUTMIX WITH PROBABILITY DEFINED ABOVE
-		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.int32)
-		# CHOOSE RANDOM IMAGE TO CUTMIX WITH
-		k = tf.cast(tf.random.uniform([], 0, len(image)), tf.int32)
-		# CHOOSE RANDOM LOCATION
-		x = tf.cast(tf.random.uniform([], 0, DIM), tf.int32)
-		y = tf.cast(tf.random.uniform([], 0, DIM), tf.int32)
-		b = tf.random.uniform([], 0, 1)  # this is beta dist with alpha=1.0
-		WIDTH = tf.cast(DIM * tf.math.sqrt(1 - b), tf.int32) * P
-		ya = tf.math.maximum(0, y - WIDTH // 2)
-		yb = tf.math.minimum(DIM, y + WIDTH // 2)
-		xa = tf.math.maximum(0, x - WIDTH // 2)
-		xb = tf.math.minimum(DIM, x + WIDTH // 2)
-		# MAKE CUTMIX IMAGE
-		one = image[j, ya:yb, 0:xa, :]
-		two = image[k, ya:yb, xa:xb, :]
-		three = image[j, ya:yb, xb:DIM, :]
-		middle = tf.concat([one, two, three], axis=1)
-		img = tf.concat([image[j, 0:ya, :, :], middle, image[j, yb:DIM, :, :]], axis=0)
-		imgs.append(img)
-		# MAKE CUTMIX LABEL
-		a = tf.cast(WIDTH * WIDTH / DIM / DIM, tf.float32)
-		if True:
-			lab1 = tf.one_hot(label[j], CLASSES)
-			lab2 = tf.one_hot(label[k], CLASSES)
-		else:
-			lab1 = label[j,]
-			lab2 = label[k,]
-		labs.append((1 - a) * lab1 + a * lab2)
-
-	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-
-	image2 = tf.reshape(tf.stack(imgs), (len(image), DIM, DIM, 1))
-	label2 = tf.reshape(tf.stack(labs), (len(image), CLASSES))
-	return image2, label2
 
 
 def id2path(idx, is_train=True):
@@ -89,6 +44,7 @@ def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
 	waves = waves / np.max(waves)
+	waves = fft(waves)
 	waves = torch.from_numpy(waves).float()
 	image = transform(waves)
 	image = np.array(image)
@@ -128,13 +84,9 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(128,128))
+		batch_X = tf.image.resize(images=batch_X, size=(128, 128))
 
 
-		if self.valid == False:
-			batch_X, batch_y = cutmix(batch_X, batch_y)
-		if self.valid:
-			batch_y = tf.one_hot(batch_y, depth=2)
 
 		if self.is_train:
 			return np.array(batch_X), batch_y
@@ -155,13 +107,12 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(128,128,1)), L.Conv2D(3, 3, activation='relu', padding='same'),
+model = tf.keras.Sequential([L.Conv2D(3, 3, activation='relu', padding='same'),
                              efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
                              L.GlobalAveragePooling2D(),
                              L.Dense(32, activation='relu'),
-                             L.Dense(2, activation='softmax')])
+                             L.Dense(1, activation='softmax')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
-model.summary()
 lr_decayed_fn = tf.keras.experimental.CosineDecay(
 	1e-3,
 	700,

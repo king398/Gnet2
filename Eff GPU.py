@@ -51,12 +51,6 @@ def increase_dimension(idx, is_train):  # in order to use efficientnet we need 3
 	return waves
 
 
-bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
-
-
-def filterSig(waves, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, waves))  # lfilter introduces a larger spike around 20hz
 
 
 example = np.load(path[4])
