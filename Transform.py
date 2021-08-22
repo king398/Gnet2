@@ -5,7 +5,6 @@ import re
 import warnings
 from pathlib import Path
 from typing import Optional, Tuple
-import random
 
 import efficientnet.tfkeras as efn
 import matplotlib.pyplot as plt
@@ -72,7 +71,6 @@ for i, j in [(0, 4), (5, 9), (10, 14), (15, 19)]:
 	GCS_path = KaggleDatasets().get_gcs_path(f"g2net-waveform-tfrecords-train-{i}-{j}")
 	gcs_paths.append(GCS_path)
 	print(GCS_path)
-print(gcs_paths)
 all_files = []
 for path in gcs_paths:
 	all_files.extend(np.sort(np.array(tf.io.gfile.glob(path + "/train*.tfrecords"))))
@@ -165,8 +163,6 @@ PADDING = tf.constant([[0, 0],
 
 
 def create_cqt_image(wave, hop_length=16):
-	wave = tf.random.shuffle(wave)
-
 	CQTs = []
 	for i in range(3):
 		x = wave[i]
@@ -229,6 +225,37 @@ def mixup(image, label, probability=0.5, aug_batch=64 * 8):
 	return image2, label2
 
 
+class CoarseDropout:
+	def __init__(self, max_holes=32, size=0.06):
+		self.size = size
+		self.max_holes = max_holes
+
+	def __call__(self, image):
+		P = random.uniform(0, 1)
+		height = image.shape[0]
+		width = image.shape[1]
+		for _n in range(self.max_holes):
+			hole_height = height * self.size * P
+			hole_width = width * self.size * P
+			hole_height = int(hole_height)
+			hole_width = int(hole_width)
+			y1 = random.randint(0, int(height - hole_height))
+			x1 = random.randint(0, int(width - hole_width))
+			y2 = y1 + hole_height
+			x2 = x1 + hole_width
+
+			one = image[y1:y2, 0:x1, :]
+			two = tf.zeros([y2 - y1, x2 - x1, 1], dtype=tf.float32)
+			three = image[y1:y2, x2:width, :]
+			middle = tf.concat([one, two, three], axis=1)
+			image = tf.concat(
+				[image[0:y1, :, :][tf.newaxis, ...], middle[tf.newaxis, ...], image[y2:height, :, :][tf.newaxis, ...]],
+				axis=1)[0]
+
+		image = tf.cast(image, dtype=tf.float32)
+		return image
+
+
 def time_shift(img, shift=T_SHIFT):
 	if shift > 0:
 		T = IMAGE_SIZE
@@ -280,19 +307,7 @@ def aug_f(imgs, labels, batch_size):
 	return imgs, label_positive_shift(label)
 
 
-import albumentations as A
-
-
-def aug():
-	return A.Compose([
-		A.ToFloat(),
-		A.augmentations.transforms.GaussNoise(),
-		A.augmentations.transforms.Cutout(),
-
-	])
-
-
-def prepare_image(wave, dim=256, aug=aug()):
+def prepare_image(wave, dim=256):
 	wave = tf.reshape(tf.io.decode_raw(wave, tf.float64), (3, 4096))
 	normalized_waves = []
 	for i in range(3):
@@ -301,13 +316,9 @@ def prepare_image(wave, dim=256, aug=aug()):
 	wave = tf.stack(normalized_waves)
 	wave = tf.cast(wave, tf.float32)
 	image = create_cqt_image(wave, HOP_LENGTH)
-	wave = tf.cast(wave, np.float32)
-
-	image = np.array(image)
-	image = aug(image=image)["image"]
 	image = tf.image.resize(image, size=(dim, dim))
-	image = tf.cast(image, dtype=tf.float32)
-
+	image = CoarseDropout(image)
+	image = tfa.image.sharpness(image,)
 	return tf.reshape(image, (dim, dim, 3))
 
 
@@ -336,15 +347,11 @@ def get_dataset(files, batch_size=16, repeat=False, shuffle=False, aug=True, lab
 	return ds
 
 
-from efficientnet_v2 import EfficientNetV2S
-
-
 def build_model(size=256, efficientnet_size=0, weights="imagenet", count=0):
 	inputs = tf.keras.layers.Input(shape=(size, size, 3))
 
-	efn_layer = EfficientNetV2S(
-		weights='imagenet', include_top=False
-	)
+	efn_string = f"EfficientNetB{efficientnet_size}"
+	efn_layer = getattr(efn, efn_string)(input_shape=(size, size, 3), weights=weights, include_top=False)
 
 	x = efn_layer(inputs)
 	x = tf.keras.layers.GlobalAveragePooling2D()(x)
@@ -389,7 +396,6 @@ oof_pred = []
 oof_target = []
 
 files_train_all = np.array(all_files)
-
 for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
 	files_train = files_train_all[trn_idx]
 	files_valid = files_train_all[val_idx]
@@ -411,9 +417,10 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
 			count=train_image_count // BATCH_SIZE // REPLICAS // 4)
 
 	model_ckpt = tf.keras.callbacks.ModelCheckpoint(
-		str(SAVEDIR / f"fold{fold}"), monitor="val_auc", verbose=1, save_best_only=True,
+		str(SAVEDIR / f"fold{fold}.h5"), monitor="val_auc", verbose=1, save_best_only=True,
 		save_weights_only=True, mode="max", save_freq="epoch"
 	)
+
 	history = model.fit(
 		get_dataset(files_train, batch_size=BATCH_SIZE, shuffle=True, repeat=True, aug=True),
 		epochs=EPOCHS,
@@ -424,7 +431,7 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
 	)
 
 	print("Loading best model...")
-	model.load_weights(str(SAVEDIR / f"fold{fold}"))
+	model.load_weights(str(SAVEDIR / f"fold{fold}.h5"))
 
 	ds_valid = get_dataset(files_valid, labeled=False, return_image_ids=False, repeat=True, shuffle=False,
 	                       batch_size=BATCH_SIZE * 2, aug=False)
