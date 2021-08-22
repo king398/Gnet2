@@ -318,7 +318,8 @@ def prepare_image(wave, dim=256):
 	image = create_cqt_image(wave, HOP_LENGTH)
 	image = tf.image.resize(image, size=(dim, dim))
 	image = CoarseDropout(image)
-	image = tfa.image.sharpness(image,)
+	image = tfa.image.sharpness(image)
+
 	return tf.reshape(image, (dim, dim, 3))
 
 
