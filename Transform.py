@@ -163,6 +163,7 @@ PADDING = tf.constant([[0, 0],
 
 
 def create_cqt_image(wave, hop_length=16):
+	wave = tf.random.shuffle(wave)
 	CQTs = []
 	for i in range(3):
 		x = wave[i]
@@ -317,8 +318,7 @@ def prepare_image(wave, dim=256):
 	wave = tf.cast(wave, tf.float32)
 	image = create_cqt_image(wave, HOP_LENGTH)
 	image = tf.image.resize(image, size=(dim, dim))
-	image = CoarseDropout(image)
-	image = tfa.image.sharpness(image)
+	image = tf.image.random_flip_up_down(image)
 
 	return tf.reshape(image, (dim, dim, 3))
 
