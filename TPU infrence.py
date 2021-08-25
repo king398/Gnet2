@@ -54,12 +54,9 @@ strategy, tpu_detected = auto_select_accelerator()
 AUTO = tf.data.experimental.AUTOTUNE
 REPLICAS = strategy.num_replicas_in_sync
 
-gcs_paths = []
-for i, j in [(0, 4), (5, 9)]:
-	GCS_path = KaggleDatasets().get_gcs_path(f"g2net-waveform-tfrecords-test-{i}-{j}")
-	gcs_paths.append(GCS_path)
-	print(GCS_path)
-print(GCS_path)
+gcs_paths = ['gs://kds-7b2c3c30216b2e0490017fad89bd4a82ba7b1b886619f56281b00bde',
+             'gs://kds-7111a17939a58ba75017380c82cbec4bdbdaa330810e0acc24bdc8e8']
+
 all_files = []
 for path in gcs_paths:
 	all_files.extend(np.sort(np.array(tf.io.gfile.glob(path + "/test*.tfrecords"))))
