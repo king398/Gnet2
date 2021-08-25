@@ -8,7 +8,7 @@ import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm import tqdm_notebook as tqdm
+from tqdm.notebook import trange, tqdm
 
 
 def convert_image_id_2_path(image_id: str, is_train: bool = True) -> str:
@@ -26,12 +26,6 @@ from nnAudio.Spectrogram import CQT1992v2
 Q_TRANSFORM = CQT1992v2(sr=2048, fmin=20, fmax=1024, hop_length=32)
 from scipy import signal
 
-bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
-
-
-def filterSig(wave, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, wave))
 
 def visualize_sample_qtransform(
 		_id,
@@ -43,7 +37,7 @@ def visualize_sample_qtransform(
 	plt.figure(figsize=(16, 5))
 	for i in range(3):
 		waves = x[i] / np.max(x[i])
-		waves = filterSig(waves)
+		waves = waves
 		waves = torch.from_numpy(waves).float()
 		image = Q_TRANSFORM(waves)
 
@@ -109,13 +103,6 @@ def set_seed(seed):
 set_seed(42)
 from scipy import signal
 
-bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
-
-
-def filterSig(wave, a=aHP, b=bHP):
-	'''Apply a 20Hz high pass filter to the three events'''
-	return np.array(signal.filtfilt(b, a, wave))
-
 
 class DataRetriever(torch_data.Dataset):
 	def __init__(self, paths, targets):
@@ -133,7 +120,6 @@ class DataRetriever(torch_data.Dataset):
 		image = []
 		for i in range(3):
 			waves = x[i] / np.max(x[i])
-			waves = filterSig(waves)
 			waves = torch.from_numpy(waves).float()
 			channel = self.q_transform(waves).squeeze().numpy()
 			image.append(channel)
@@ -142,7 +128,7 @@ class DataRetriever(torch_data.Dataset):
 
 	def __getitem__(self, index):
 		file_path = convert_image_id_2_path(self.paths[index])
-		x = filterSig(np.load(file_path))
+		x = np.load(file_path)
 		image = self.__get_qtransform(x)
 
 		y = torch.tensor(self.targets[index], dtype=torch.float)
@@ -182,16 +168,19 @@ import timm
 
 import efficientnet_pytorch
 
+
 class Model(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.net = efficientnet_pytorch.EfficientNet.from_pretrained("efficientnet-b7")
-        n_features = self.net._fc.in_features
-        self.net._fc = nn.Linear(in_features=n_features, out_features=1, bias=True)
-    
-    def forward(self, x):
-        out = self.net(x)
-        return out
+	def __init__(self):
+		super().__init__()
+		self.net = efficientnet_pytorch.EfficientNet.from_pretrained("efficientnet-b7")
+		n_features = self.net._fc.in_features
+		self.net._fc = nn.Linear(in_features=n_features, out_features=1, bias=True)
+
+	def forward(self, x):
+		out = self.net(x)
+		return out
+
+
 class LossMeter:
 	def __init__(self):
 		self.avg = 0
@@ -357,7 +346,7 @@ trainer = Trainer(
 )
 
 history = trainer.fit(
-	3,
+	5,
 	train_loader,
 	valid_loader,
 	"best-model.pth",
@@ -411,7 +400,7 @@ test_loader = torch_data.DataLoader(
 y_pred = []
 ids = []
 
-for e, batch in enumerate(test_loader):
+for e, batch in tqdm(enumerate(test_loader)):
 	print(f"{e}/{len(test_loader)}", end="\r")
 	with torch.no_grad():
 		y_pred.extend(torch.sigmoid(model(batch["X"].to(device))).cpu().numpy().squeeze())

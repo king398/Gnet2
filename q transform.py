@@ -13,7 +13,9 @@ from random import shuffle
 from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
 import albumentations as A
-
+from typing import Optional, Tuple
+from scipy.signal import get_window
+import warnings
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
 from tensorflow.keras import mixed_precision
 
@@ -34,37 +36,120 @@ def aug():
 	])
 
 
-def mixup(image, label, PROBABILITY=1.0):
-	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
-	# output - a batch of images with mixup applied
-	DIM = 128
-	CLASSES = 2
+def create_cqt_kernels(
+		q: float,
+		fs: float,
+		fmin: float,
+		n_bins: int = 84,
+		bins_per_octave: int = 12,
+		norm: float = 1,
+		window: str = "hann",
+		fmax: Optional[float] = None,
+		topbin_check: bool = True
+) -> Tuple[np.ndarray, int, np.ndarray, float]:
+	fft_len = 2 ** _nextpow2(np.ceil(q * fs / fmin))
 
-	imgs = [];
-	labs = []
-	for j in range(len(image)):
-		# DO MIXUP WITH PROBABILITY DEFINED ABOVE
-		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.float32)
-		# CHOOSE RANDOM
-		k = tf.cast(tf.random.uniform([], 0, len(image)), tf.int32)
-		a = tf.random.uniform([], 0, 1) * P  # this is beta dist with alpha=1.0
-		# MAKE MIXUP IMAGE
-		img1 = image[j,]
-		img2 = image[k,]
-		imgs.append((1 - a) * img1 + a * img2)
-		# MAKE CUTMIX LABEL
-		if True:
-			lab1 = tf.one_hot(label[j], CLASSES)
-			lab2 = tf.one_hot(label[k], CLASSES)
+	if (fmax is not None) and (n_bins is None):
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	elif (fmax is None) and (n_bins is not None):
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	else:
+		warnings.warn("If nmax is given, n_bins will be ignored", SyntaxWarning)
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+
+	if np.max(freqs) > fs / 2 and topbin_check:
+		raise ValueError(f"The top bin {np.max(freqs)} Hz has exceeded the Nyquist frequency, \
+                           please reduce the `n_bins`")
+
+	kernel = np.zeros((int(n_bins), int(fft_len)), dtype=np.complex64)
+
+	length = np.ceil(q * fs / freqs)
+	for k in range(0, int(n_bins)):
+		freq = freqs[k]
+		l = np.ceil(q * fs / freq)
+
+		if l % 2 == 1:
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0)) - 1
 		else:
-			lab1 = label[j,]
-			lab2 = label[k,]
-		labs.append((1 - a) * lab1 + a * lab2)
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0))
 
-	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-	image2 = tf.reshape(tf.stack(imgs), (len(image), 69, 385, 1))
-	label2 = tf.reshape(tf.stack(labs), (len(image), CLASSES))
-	return image2, label2
+		sig = get_window(window, int(l), fftbins=True) * np.exp(
+			np.r_[-l // 2:l // 2] * 1j * 2 * np.pi * freq / fs) / l
+
+		if norm:
+			kernel[k, start:start + int(l)] = sig / np.linalg.norm(sig, norm)
+		else:
+			kernel[k, start:start + int(l)] = sig
+	return kernel, fft_len, length, freqs
+
+
+def _nextpow2(a: float) -> int:
+	return int(np.ceil(np.log2(a)))
+
+
+def prepare_cqt_kernel(
+		sr=22050,
+		hop_length=512,
+		fmin=32.70,
+		fmax=None,
+		n_bins=84,
+		bins_per_octave=12,
+		norm=1,
+		filter_scale=1,
+		window="hann"
+):
+	q = float(filter_scale) / (2 ** (1 / bins_per_octave) - 1)
+	print(q)
+	return create_cqt_kernels(q, sr, fmin, n_bins, bins_per_octave, norm, window, fmax)
+
+
+HOP_LENGTH = 16
+cqt_kernels, KERNEL_WIDTH, lengths, _ = prepare_cqt_kernel(
+	sr=2048,
+	hop_length=HOP_LENGTH,
+	fmin=20,
+	fmax=1024,
+	bins_per_octave=24)
+LENGTHS = tf.constant(lengths, dtype=tf.float32)
+CQT_KERNELS_REAL = tf.constant(np.swapaxes(cqt_kernels.real[:, np.newaxis, :], 0, 2))
+CQT_KERNELS_IMAG = tf.constant(np.swapaxes(cqt_kernels.imag[:, np.newaxis, :], 0, 2))
+PADDING = tf.constant([[0, 0],
+                       [KERNEL_WIDTH // 2, KERNEL_WIDTH // 2],
+                       [0, 0]])
+
+
+def create_cqt_image(wave, hop_length=16):
+	wave = tf.random.shuffle(wave)
+	CQTs = []
+	for i in range(3):
+		x = wave[i]
+		x = tf.expand_dims(tf.expand_dims(x, 0), 2)
+		x = tf.pad(x, PADDING, "REFLECT")
+
+		CQT_real = tf.nn.conv1d(x, CQT_KERNELS_REAL, stride=hop_length, padding="VALID")
+		CQT_imag = -tf.nn.conv1d(x, CQT_KERNELS_IMAG, stride=hop_length, padding="VALID")
+		CQT_real *= tf.math.sqrt(LENGTHS)
+		CQT_imag *= tf.math.sqrt(LENGTHS)
+
+		CQT = tf.math.sqrt(tf.pow(CQT_real, 2) + tf.pow(CQT_imag, 2))
+		CQTs.append(CQT[0])
+	return tf.stack(CQTs, axis=2)
+
+
+def prepare_image(wave, dim=128):
+	wave = np.load(id2path(wave, True))
+	normalized_waves = []
+	for i in range(3):
+		normalized_wave = wave[i] / tf.math.reduce_max(wave + [i])
+		normalized_waves.append(normalized_wave)
+	wave = tf.stack(normalized_waves)
+	wave = tf.cast(wave, tf.float32)
+	image = create_cqt_image(wave, HOP_LENGTH)
+	image = tf.image.resize(image, size=(256, 128))
+
+	return tf.reshape(image, (dim, dim, 3))
 
 
 def id2path(idx, is_train=True):
@@ -76,21 +161,6 @@ def id2path(idx, is_train=True):
 	return path
 
 
-import torch
-from nnAudio.Spectrogram import CQT1992v2
-
-
-def increase_dimension(idx, is_train, transform=CQT1992v2(
-	sr=2048, fmin=20, fmax=1024, hop_length=32)):  # in order to use efficientnet we need 3 dimension images
-	waves = np.load(id2path(idx, is_train))
-	image = []
-	for i in range(3):
-		waves = waves[i] / np.max(waves[i])
-		waves = torch.from_numpy(waves).float()
-		channel = transform(waves).squeeze().numpy()
-		image.append(channel)
-
-	return image
 
 
 example = np.load(path[4])
@@ -124,8 +194,10 @@ class Dataset(Sequence):
 		if self.y is not None:
 			batch_y = self.y[ids * self.batch_size: (ids + 1) * self.batch_size]
 
-		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
-		batch_X = list_x
+		batch_X = []
+		for i in batch_ids:
+			x = prepare_image(wave=i)
+			batch_X.append(x)
 		print(batch_X)
 
 		if self.is_train:
@@ -147,11 +219,11 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([L.InputLayer(input_shape=(69, 193, 1)), L.Conv2D(3, 3, activation='relu', padding='same'),
-                             efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
-                             L.GlobalAveragePooling2D(),
-                             L.Dense(32, activation='relu'),
-                             L.Dense(1, activation='sigmoid')])
+model = tf.keras.Sequential([
+	efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
+	L.GlobalAveragePooling2D(),
+	L.Dense(32, activation='relu'),
+	L.Dense(1, activation='sigmoid')])
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
 model.summary()
 lr_decayed_fn = tf.keras.experimental.CosineDecay(

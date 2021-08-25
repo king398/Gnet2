@@ -44,7 +44,6 @@ def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax
 	waves = np.load(id2path(idx, is_train))
 	waves = np.hstack(waves)
 	waves = waves / np.max(waves)
-	waves = fft(waves)
 	waves = torch.from_numpy(waves).float()
 	image = transform(waves)
 	image = np.array(image)
@@ -84,7 +83,6 @@ class Dataset(Sequence):
 
 		list_x = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
 		batch_X = np.stack(list_x)
-		batch_X = tf.image.resize(images=batch_X, size=(128, 128))
 
 
 

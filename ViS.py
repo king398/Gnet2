@@ -1,21 +1,10 @@
-import os
-import math
-import random
-import re
 import warnings
-from pathlib import Path
 from typing import Optional, Tuple
 
-import efficientnet.tfkeras as efn
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import seaborn as sns
 import tensorflow as tf
-import tensorflow_addons as tfa
 from scipy.signal import get_window
-from sklearn.model_selection import KFold
-from sklearn.metrics import roc_auc_score
 
 x = np.load(r"F:\Pycharm_projects\Gnet2\data\00000e74ad.npy")
 print(x)
@@ -126,10 +115,11 @@ def create_cqt_image(wave, hop_length=16):
 
 
 images = [r"F:\Pycharm_projects\Gnet2\data\0a101ba5db.npy", r"F:\Pycharm_projects\Gnet2\data\0b0006d146.npy",
-          r"F:\Pycharm_projects\Gnet2\data\a01322c660.npy"]
+          r"F:\Pycharm_projects\Gnet2\data\a01322c660.npy", r"F:\Pycharm_projects\Gnet2\data\00000e74ad.npy"]
+import tensorflow_addons as tfa
 
 
-def prepare_image(dim=512):
+def prepare_image(dim=128):
 	for x in images:
 
 		wave = np.load(x)
@@ -140,10 +130,9 @@ def prepare_image(dim=512):
 		wave = tf.stack(normalized_waves)
 		wave = tf.cast(wave, tf.float32)
 		image = create_cqt_image(wave, HOP_LENGTH)
-		image = tf.image.resize(image, size=(dim, dim))
+		image = tf.image.resize(image, size=(256, 128))
 
-		image = tfa.image.sharpness(image, factor=0.2)
-
+		print(image)
 
 		plt.imshow(image)
 
