@@ -1,64 +1,54 @@
-# Asthetics
-import warnings
-
-import sklearn.exceptions
-
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
-
-# General
-import pandas as pd
-import numpy as np
+import os
+import math
 import random
 import re
+import warnings
+from pathlib import Path
+from typing import Optional, Tuple
 
-pd.set_option('display.max_columns', None)
-import albumentations as A
-
-# Visualizations
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-sns.set(style="whitegrid")
-
-# Machine Learning
-# Pre Procesing
-# Models
-from sklearn.model_selection import KFold
-# Deep Learning
-import tensorflow as tf
-import tensorflow.keras.backend as K
 import efficientnet.tfkeras as efn
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import tensorflow as tf
 import tensorflow_addons as tfa
+from scipy.signal import get_window
+from sklearn.model_selection import KFold
+from sklearn.metrics import roc_auc_score
 from tensorflow.keras import mixed_precision
 
-tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
-# Metrics
+policy = mixed_precision.Policy('mixed_bfloat16')
+mixed_precision.set_global_policy(policy)
+NUM_FOLDS = 4
+IMAGE_SIZE = 512
+BATCH_SIZE = 8
+EFFICIENTNET_SIZE = 7
+WEIGHTS = "imagenet"
 
-print('TF', tf.__version__)
+MIXUP_PROB = 0.0
+EPOCHS = 25
+R_ANGLE = 0 / 180 * np.pi
+S_SHIFT = 0.0
+T_SHIFT = 0.0
+LABEL_POSITIVE_SHIFT = 0.99
+SAVEDIR = Path("models")
+SAVEDIR.mkdir(exist_ok=True)
 
-# Random Seed Fixing
-RANDOM_SEED = 42
+OOFDIR = Path("oof")
+OOFDIR.mkdir(exist_ok=True)
 
 
-def seed_everything(seed=RANDOM_SEED):
-	os.environ['PYTHONHASHSEED'] = str(seed)
-	np.random.seed(seed)
+def set_seed(seed=42):
 	random.seed(seed)
+	os.environ["PYTHONHASHSEED"] = str(seed)
+	np.random.seed(seed)
 	tf.random.set_seed(seed)
 
 
-import os
-from tensorflow.python.profiler import profiler_client
-
-seed_everything()
-
-tpu_profile_service_address = os.environ['COLAB_TPU_ADDR'].replace('8470', '8466')
-print(profiler_client.monitor(tpu_profile_service_address, 100, 2))
+set_seed(1213)
 
 
-# From https://www.kaggle.com/xhlulu/ranzcr-efficientnet-tpu-training
 def auto_select_accelerator():
 	TPU_DETECTED = False
 	try:
@@ -73,152 +63,289 @@ def auto_select_accelerator():
 	print(f"Running on {strategy.num_replicas_in_sync} replicas")
 
 	return strategy, TPU_DETECTED
+	strategy, tpu_detected = auto_select_accelerator()
 
 
-# Model Params
-KFOLDS = 4
-IMG_SIZES = [380] * KFOLDS
-BATCH_SIZES = [32] * KFOLDS
-EPOCHS = [20] * KFOLDS
-EFF_NETS = [2] * KFOLDS  # WHICH EFFICIENTNET B? TO USE
+strategy, tpu_detected = auto_select_accelerator()
 
-AUG = True
-MIX_UP_P = 0.1
-S_SHIFT = 0.0
-T_SHIFT = 0.0
-R_ANGLE = 0 / 180 * np.pi
-LABEL_POSITIVE_SHIFT = 0.99
-# Model Eval Params
-DISPLAY_PLOT = True
-
-# Inference Params
-WGTS = [1 / KFOLDS] * KFOLDS
-strategy, TPU_DETECTED = auto_select_accelerator()
 AUTO = tf.data.experimental.AUTOTUNE
 REPLICAS = strategy.num_replicas_in_sync
-from tqdm.notebook import tqdm
+gcs_paths = ['gs://kds-7e745d03ff3d4499c58a10d7349fa8aa147fa55dbe731f6211d8c6e9',
+             'gs://kds-020b02965217d87ff0612db80f9fb40b3b083301f4c8712c5e9b223b',
+             'gs://kds-a60d913c520bd7a57d5118d8bf7a362d3189c197ae6227d5328116bd',
+             'gs://kds-a036528a8c80b6121af39348073b8c6547933b850ff8c7a01e8e3895']
+all_files = []
+for path in gcs_paths:
+	all_files.extend(np.sort(np.array(tf.io.gfile.glob(path + "/train*.tfrecords"))))
 
-files_train_g = []
-for i, k in tqdm([(0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15)]):
-	GCS_PATH = "gs://kds-45a91535658658322f84a0dd167c8ee2ed6d18989bfe3c7ea606e6ad"
-	files_train_g.extend(np.sort(np.array(tf.io.gfile.glob(GCS_PATH + '/train*.tfrec'))).tolist())
-num_train_files = len(files_train_g)
-print(files_train_g)
-print('train_files:', num_train_files)
+print("train_files: ", len(all_files))
 
 
-@tf.function
-def mixup(image, label, PROBABILITY=1.0, AUG_BATCH=BATCH_SIZES[0] * REPLICAS):
-	# input image - is a batch of images of size [n,dim,dim,3] not a single image of [dim,dim,3]
-	# output - a batch of images with mixup applied
-	DIM = IMG_SIZES[0]
+def create_cqt_kernels(
+		q: float,
+		fs: float,
+		fmin: float,
+		n_bins: int = 84,
+		bins_per_octave: int = 12,
+		norm: float = 1,
+		window: str = "hann",
+		fmax: Optional[float] = None,
+		topbin_check: bool = True
+) -> Tuple[np.ndarray, int, np.ndarray, float]:
+	fft_len = 2 ** _nextpow2(np.ceil(q * fs / fmin))
 
-	imgs = [];
+	if (fmax is not None) and (n_bins is None):
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	elif (fmax is None) and (n_bins is not None):
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	else:
+		warnings.warn("If nmax is given, n_bins will be ignored", SyntaxWarning)
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+
+	if np.max(freqs) > fs / 2 and topbin_check:
+		raise ValueError(f"The top bin {np.max(freqs)} Hz has exceeded the Nyquist frequency, \
+                           please reduce the `n_bins`")
+
+	kernel = np.zeros((int(n_bins), int(fft_len)), dtype=np.complex64)
+
+	length = np.ceil(q * fs / freqs)
+	for k in range(0, int(n_bins)):
+		freq = freqs[k]
+		l = np.ceil(q * fs / freq)
+
+		if l % 2 == 1:
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0)) - 1
+		else:
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0))
+
+		sig = get_window(window, int(l), fftbins=True) * np.exp(
+			np.r_[-l // 2:l // 2] * 1j * 2 * np.pi * freq / fs) / l
+
+		if norm:
+			kernel[k, start:start + int(l)] = sig / np.linalg.norm(sig, norm)
+		else:
+			kernel[k, start:start + int(l)] = sig
+	return kernel, fft_len, length, freqs
+
+
+def _nextpow2(a: float) -> int:
+	return int(np.ceil(np.log2(a)))
+
+
+def create_cqt_kernels(
+		q: float,
+		fs: float,
+		fmin: float,
+		n_bins: int = 84,
+		bins_per_octave: int = 12,
+		norm: float = 1,
+		window: str = "hann",
+		fmax: Optional[float] = None,
+		topbin_check: bool = True
+) -> Tuple[np.ndarray, int, np.ndarray, float]:
+	fft_len = 2 ** _nextpow2(np.ceil(q * fs / fmin))
+
+	if (fmax is not None) and (n_bins is None):
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	elif (fmax is None) and (n_bins is not None):
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+	else:
+		warnings.warn("If nmax is given, n_bins will be ignored", SyntaxWarning)
+		n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))
+		freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.float(bins_per_octave))
+
+	if np.max(freqs) > fs / 2 and topbin_check:
+		raise ValueError(f"The top bin {np.max(freqs)} Hz has exceeded the Nyquist frequency, \
+                           please reduce the `n_bins`")
+
+	kernel = np.zeros((int(n_bins), int(fft_len)), dtype=np.complex64)
+
+	length = np.ceil(q * fs / freqs)
+	for k in range(0, int(n_bins)):
+		freq = freqs[k]
+		l = np.ceil(q * fs / freq)
+
+		if l % 2 == 1:
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0)) - 1
+		else:
+			start = int(np.ceil(fft_len / 2.0 - l / 2.0))
+
+		sig = get_window(window, int(l), fftbins=True) * np.exp(
+			np.r_[-l // 2:l // 2] * 1j * 2 * np.pi * freq / fs) / l
+
+		if norm:
+			kernel[k, start:start + int(l)] = sig / np.linalg.norm(sig, norm)
+		else:
+			kernel[k, start:start + int(l)] = sig
+	return kernel, fft_len, length, freqs
+
+
+def _nextpow2(a: float) -> int:
+	return int(np.ceil(np.log2(a)))
+
+
+def prepare_cqt_kernel(
+		sr=22050,
+		hop_length=512,
+		fmin=32.70,
+		fmax=None,
+		n_bins=84,
+		bins_per_octave=12,
+		norm=1,
+		filter_scale=1,
+		window="hann"
+):
+	q = float(filter_scale) / (2 ** (1 / bins_per_octave) - 1)
+	print(q)
+	return create_cqt_kernels(q, sr, fmin, n_bins, bins_per_octave, norm, window, fmax)
+
+
+HOP_LENGTH = 16
+cqt_kernels, KERNEL_WIDTH, lengths, _ = prepare_cqt_kernel(
+	sr=2048,
+	hop_length=HOP_LENGTH,
+	fmin=20,
+	fmax=1024,
+	bins_per_octave=24)
+LENGTHS = tf.constant(lengths, dtype=tf.float32)
+CQT_KERNELS_REAL = tf.constant(np.swapaxes(cqt_kernels.real[:, np.newaxis, :], 0, 2))
+CQT_KERNELS_IMAG = tf.constant(np.swapaxes(cqt_kernels.imag[:, np.newaxis, :], 0, 2))
+PADDING = tf.constant([[0, 0],
+                       [KERNEL_WIDTH // 2, KERNEL_WIDTH // 2],
+                       [0, 0]])
+
+
+def create_cqt_image(wave, hop_length=16):
+	CQTs = []
+	for i in range(3):
+		x = wave[i]
+		x = tf.expand_dims(tf.expand_dims(x, 0), 2)
+		x = tf.pad(x, PADDING, "REFLECT")
+
+		CQT_real = tf.nn.conv1d(x, CQT_KERNELS_REAL, stride=hop_length, padding="VALID")
+		CQT_imag = -tf.nn.conv1d(x, CQT_KERNELS_IMAG, stride=hop_length, padding="VALID")
+		CQT_real *= tf.math.sqrt(LENGTHS)
+		CQT_imag *= tf.math.sqrt(LENGTHS)
+
+		CQT = tf.math.sqrt(tf.pow(CQT_real, 2) + tf.pow(CQT_imag, 2))
+		CQTs.append(CQT[0])
+	return tf.stack(CQTs, axis=2)
+
+
+def read_labeled_tfrecord(example):
+	tfrec_format = {
+		"wave": tf.io.FixedLenFeature([], tf.string),
+		"wave_id": tf.io.FixedLenFeature([], tf.string),
+		"target": tf.io.FixedLenFeature([], tf.int64)
+	}
+	example = tf.io.parse_single_example(example, tfrec_format)
+	return prepare_image(example["wave"], IMAGE_SIZE), tf.reshape(tf.cast(example["target"], tf.float32), [1])
+
+
+def read_unlabeled_tfrecord(example, return_image_id):
+	tfrec_format = {
+		"wave": tf.io.FixedLenFeature([], tf.string),
+		"wave_id": tf.io.FixedLenFeature([], tf.string)
+	}
+	example = tf.io.parse_single_example(example, tfrec_format)
+	return prepare_image(example["wave"], IMAGE_SIZE), example["wave_id"] if return_image_id else 0
+
+
+def count_data_items(fileids):
+	return len(fileids) * 28000
+
+
+def count_data_items_test(fileids):
+	return len(fileids) * 22600
+
+
+def mixup(image, label, probability=0.5, aug_batch=64 * 8):
+	imgs = []
 	labs = []
-	for j in range(AUG_BATCH):
-		# DO MIXUP WITH PROBABILITY DEFINED ABOVE
-		P = tf.cast(tf.random.uniform([], 0, 1) <= PROBABILITY, tf.float32)
-		# CHOOSE RANDOM
-		k = tf.cast(tf.random.uniform([], 0, AUG_BATCH), tf.int32)
-		a = tf.random.uniform([], 0, 1) * P  # this is beta dist with alpha=1.0
-		# MAKE MIXUP IMAGE
-		img1 = image[j,]
-		img2 = image[k,]
-		imgs.append((1 - a) * img1 + a * img2)
-		# MAKE CUTMIX LABEL
-		lab1 = label[j,]
-		lab2 = label[k,]
-		labs.append((1 - a) * lab1 + a * lab2)
+	for j in range(aug_batch):
+		p = tf.cast(tf.random.uniform([], 0, 1) <= probability, tf.float32)
+		k = tf.cast(tf.random.uniform([], 0, aug_batch), tf.int32)
+		a = tf.random.uniform([], 0, 1) * p
 
-	# RESHAPE HACK SO TPU COMPILER KNOWS SHAPE OF OUTPUT TENSOR (maybe use Python typing instead?)
-	image2 = tf.reshape(tf.stack(imgs), (AUG_BATCH, DIM, DIM, 3))
-	label2 = tf.reshape(tf.stack(labs), (AUG_BATCH,))
+		img1 = image[j]
+		img2 = image[k]
+		imgs.append((1 - a) * img1 + a * img2)
+		lab1 = label[j]
+		lab2 = label[k]
+		labs.append((1 - a) * lab1 + a * lab2)
+	image2 = tf.reshape(tf.stack(imgs), (aug_batch, IMAGE_SIZE, IMAGE_SIZE, 3))
+	label2 = tf.reshape(tf.stack(labs), (aug_batch,))
 	return image2, label2
 
 
 def time_shift(img, shift=T_SHIFT):
-	T = IMG_SIZES[0]
-	P = tf.random.uniform([], 0, 1)
-	SHIFT = tf.cast(T * P, tf.int32)
-	return tf.concat([img[-SHIFT:], img[:-SHIFT]], axis=0)
-
-
-def spector_shift(img, shift=S_SHIFT):
-	T = IMG_SIZES[1]
-	P = tf.random.uniform([], 0, 1)
-	SHIFT = tf.cast(T * P, tf.int32)
-	return tf.concat([img[:, -SHIFT:], img[:, :-SHIFT]], axis=1)
+	if shift > 0:
+		T = IMAGE_SIZE
+		P = tf.random.uniform([], 0, 1)
+		SHIFT = tf.cast(T * P, tf.int32)
+		return tf.concat([img[-SHIFT:], img[:-SHIFT]], axis=0)
+	return img
 
 
 def rotate(img, angle=R_ANGLE):
-	P = tf.random.uniform([], 0, 1)
-	A = tf.cast(R_ANGLE * P, tf.float32)
-	return tfa.image.rotate(img, A)
+	if angle > 0:
+		P = tf.random.uniform([], 0, 1)
+		A = tf.cast(angle * P, tf.float32)
+		return tfa.image.rotate(img, A)
+	return img
+
+
+def spector_shift(img, shift=S_SHIFT):
+	if shift > 0:
+		T = IMAGE_SIZE
+		P = tf.random.uniform([], 0, 1)
+		SHIFT = tf.cast(T * P, tf.int32)
+		return tf.concat([img[:, -SHIFT:], img[:, :-SHIFT]], axis=1)
+	return img
 
 
 def img_aug_f(img):
 	img = time_shift(img)
 	img = spector_shift(img)
-	img = rotate(img)
+	# img = rotate(img)
 	return img
 
 
 def imgs_aug_f(imgs, batch_size):
 	_imgs = []
-	DIM = IMG_SIZES[0]
+	DIM = IMAGE_SIZE
 	for j in range(batch_size):
 		_imgs.append(img_aug_f(imgs[j]))
 	return tf.reshape(tf.stack(_imgs), (batch_size, DIM, DIM, 3))
 
 
-@tf.function
+def label_positive_shift(labels):
+	return labels * LABEL_POSITIVE_SHIFT
+
+
 def aug_f(imgs, labels, batch_size):
-	imgs, label = mixup(imgs, labels, MIX_UP_P, batch_size)
 	imgs = imgs_aug_f(imgs, batch_size)
-	return imgs, label
+	return imgs, label_positive_shift(labels)
 
 
-@tf.function
-def read_labeled_tfrecord(example):
-	tfrec_format = {
-		'image': tf.io.FixedLenFeature([], tf.string),
-		'image_id': tf.io.FixedLenFeature([], tf.string),
-		'target': tf.io.FixedLenFeature([], tf.int64)
-	}
-	example = tf.io.parse_single_example(example, tfrec_format)
-	return prepare_image(example['image']), tf.reshape(tf.cast(example['target'], tf.float32), [1])
+def prepare_image(wave, dim=256):
+	wave = tf.reshape(tf.io.decode_raw(wave, tf.float64), (3, 4096))
+	normalized_waves = []
+	for i in range(3):
+		normalized_wave = wave[i] / tf.math.reduce_max(wave[i])
+		normalized_waves.append(normalized_wave)
+	wave = tf.stack(normalized_waves)
+	wave = tf.cast(wave, tf.float32)
+	image = create_cqt_image(wave, HOP_LENGTH)
+	image = tf.image.resize(image, size=(dim, dim))
+	return tf.cast(tf.reshape(image, (dim, dim, 3)), dtype=tf.bfloat16)
 
 
-@tf.function
-def read_unlabeled_tfrecord(example, return_image_id):
-	tfrec_format = {
-		'image': tf.io.FixedLenFeature([], tf.string),
-		'image_id': tf.io.FixedLenFeature([], tf.string),
-	}
-	example = tf.io.parse_single_example(example, tfrec_format)
-	return prepare_image(example['image']), example['image_id'] if return_image_id else 0
-
-
-@tf.function
-def prepare_image(img, dim=IMG_SIZES[0]):
-	img = tf.image.resize(tf.image.decode_png(img, channels=3), size=(dim, dim))
-	img = tf.cast(img, tf.float32) / 255.0
-	img = tf.reshape(img, [dim, dim, 3])
-
-	return img
-
-
-@tf.function
-def count_data_items(fileids):
-	n = [int(re.compile(r"-([0-9]*)\.").search(fileid).group(1))
-	     for fileid in fileids]
-	return np.sum(n)
-
-
-@tf.function
-def get_dataset(files, shuffle=False, repeat=False,
-                labeled=True, return_image_ids=True, batch_size=16, dim=IMG_SIZES[0], aug=False):
-	ds = tf.data.TFRecordDataset(files, num_parallel_reads=AUTO)
+def get_dataset(files, batch_size=16, repeat=False, shuffle=False, aug=True, labeled=True, return_image_ids=True):
+	ds = tf.data.TFRecordDataset(files, num_parallel_reads=AUTO, compression_type="GZIP")
 	ds = ds.cache()
 
 	if repeat:
@@ -233,8 +360,7 @@ def get_dataset(files, shuffle=False, repeat=False,
 	if labeled:
 		ds = ds.map(read_labeled_tfrecord, num_parallel_calls=AUTO)
 	else:
-		ds = ds.map(lambda example: read_unlabeled_tfrecord(example, return_image_ids),
-		            num_parallel_calls=AUTO)
+		ds = ds.map(lambda example: read_unlabeled_tfrecord(example, return_image_ids), num_parallel_calls=AUTO)
 
 	ds = ds.batch(batch_size * REPLICAS)
 	if aug:
@@ -243,62 +369,34 @@ def get_dataset(files, shuffle=False, repeat=False,
 	return ds
 
 
-EFNS = [efn.EfficientNetB0, efn.EfficientNetB1, efn.EfficientNetB2, efn.EfficientNetB3,
-        efn.EfficientNetB4, efn.EfficientNetB5, efn.EfficientNetB6, efn.EfficientNetB7]
+import keras_efficientnet_v2
 
 
-def build_model(size, ef=EFF_NETS[0], count=820):
-	inp = tf.keras.layers.Input(shape=(size, size, 3))
-	base = efn.EfficientNetB4(input_shape=(size, size, 3), weights='imagenet', include_top=False)
+def build_model(size=256, efficientnet_size=0, weights="imagenet", count=0):
+	inputs = tf.keras.layers.Input(shape=(size, size, 3))
 
-	x = base(inp)
+	efn_string = f"EfficientNetB{efficientnet_size}"
+	efn_layer = getattr(efn, efn_string)(input_shape=(size, size, 3), weights=weights, include_top=False)
 
-	x = tf.keras.layers.GlobalAvgPool2D()(x)
+	x = efn_layer(inputs)
+	x = tf.keras.layers.GlobalAveragePooling2D()(x)
 
 	x = tf.keras.layers.Dropout(0.2)(x)
-	x = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-	model = tf.keras.Model(inputs=inp, outputs=x)
-	lr_decayed_fn = tf.keras.experimental.CosineDecay(
-		1e-3,
-		count,
-	)
+	x = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+	model = tf.keras.Model(inputs=inputs, outputs=x)
 
+	lr_decayed_fn = tf.keras.experimental.CosineDecay(1e-3, count)
 	opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
 	loss = tf.keras.losses.BinaryCrossentropy()
-	model.compile(optimizer=opt, loss=loss, metrics=['AUC'])
+	model.compile(optimizer=opt, loss=loss, metrics=["AUC"])
 	return model
 
 
-def vis_lr_callback(batch_size=8):
+def get_lr_callback(batch_size=8, replicas=8):
 	lr_start = 1e-4
-	lr_max = 0.000015 * REPLICAS * batch_size
-	lr_min = 1e-5
-	lr_ramp_ep = 4
-	lr_sus_ep = 0
-	lr_decay = 0.7
-
-	def lrfn(epoch):
-		if epoch < lr_ramp_ep:
-			lr = (lr_max - lr_start) / lr_ramp_ep * epoch + lr_start
-
-		elif epoch < lr_ramp_ep + lr_sus_ep:
-			lr = lr_max
-
-		else:
-			lr = (lr_max - lr_min) * lr_decay ** (epoch - lr_ramp_ep - lr_sus_ep) + lr_min
-
-		return lr
-
-	plt.figure(figsize=(10, 7))
-	plt.plot([lrfn(i) for i in range(EPOCHS[0])])
-	plt.show()
-
-
-def get_lr_callback(batch_size=8):
-	lr_start = 1e-4
-	lr_max = 0.000015 * REPLICAS * batch_size
+	lr_max = 0.000015 * replicas * batch_size
 	lr_min = 1e-7
-	lr_ramp_ep = 4
+	lr_ramp_ep = 3
 	lr_sus_ep = 0
 	lr_decay = 0.7
 
@@ -314,111 +412,121 @@ def get_lr_callback(batch_size=8):
 
 		return lr
 
-	lr_callback = tf.keras.callbacks.LearningRateScheduler(lrfn, verbose=False)
+	lr_callback = tf.keras.callbacks.LearningRateScheduler(lrfn, verbose=True)
 	return lr_callback
 
 
-skf = KFold(n_splits=KFOLDS, shuffle=True, random_state=RANDOM_SEED)
-oof_pred = [];
-oof_tar = [];
-oof_val = [];
-oof_f1 = [];
-oof_ids = [];
-oof_folds = []
+kf = KFold(n_splits=NUM_FOLDS, shuffle=True, random_state=1213)
+oof_pred = []
+oof_target = []
 
-files_train_g = np.array(files_train_g)
+files_train_all = np.array(all_files)
+options = tf.train.CheckpointOptions(experimental_io_device="/job:localhost")
+tqdm_callback = tfa.callbacks.TQDMProgressBar()
 
-for fold, (idxT, idxV) in enumerate(skf.split(files_train_g)):
-	# CREATE TRAIN AND VALIDATION SUBSETS
-	files_train = files_train_g[idxT]
-	np.random.shuffle(files_train);
-	files_valid = files_train_g[idxV]
+for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
+	if fold == 0:
+		files_train = files_train_all[trn_idx]
+		files_valid = files_train_all[val_idx]
 
-	print('#' * 25);
-	print('#### FOLD', fold + 1)
+		print("=" * 120)
+		print(f"Fold {fold}")
+		print("=" * 120)
 
-	train_images = count_data_items(files_train)
-	val_images = count_data_items(files_valid)
-	print('#### Training: %i | Validation: %i' % (train_images, val_images))
+		train_image_count = count_data_items(files_train)
+		valid_image_count = count_data_items(files_valid)
 
-	# BUILD MODEL
-	K.clear_session()
-	with strategy.scope():
-		model = build_model(IMG_SIZES[fold],
-		                    count=count_data_items(files_train) / BATCH_SIZES[fold] // REPLICAS // 5)
-	print('#' * 25)
-	# SAVE BEST MODEL EACH FOLD
-	sv = tf.keras.callbacks.ModelCheckpoint(
-		'fold-%i.h5' % fold, monitor='val_auc', verbose=0, save_best_only=True,
-		save_weights_only=True, mode='max', save_freq='epoch')
+		tf.keras.backend.clear_session()
+		strategy, tpu_detected = auto_select_accelerator()
+		with strategy.scope():
+			model = build_model(
+				size=IMAGE_SIZE,
+				efficientnet_size=EFFICIENTNET_SIZE,
+				weights=WEIGHTS,
+				count=train_image_count // BATCH_SIZE // REPLICAS // 4)
 
-	# TRAIN
-	print('Training...')
-	history = model.fit(
-		get_dataset(files_train, shuffle=True, repeat=True,
-		            dim=IMG_SIZES[fold], batch_size=BATCH_SIZES[fold], aug=AUG),
-		epochs=EPOCHS[fold],
-		callbacks=[sv, get_lr_callback(BATCH_SIZES[fold])],
-		steps_per_epoch=count_data_items(files_train) / BATCH_SIZES[fold] // REPLICAS // 4,
-		validation_data=get_dataset(files_valid, shuffle=False,
-		                            repeat=False, dim=IMG_SIZES[fold]),
-		verbose=1
-	)
+		model_ckpt = tf.keras.callbacks.ModelCheckpoint(
+			str(SAVEDIR / f"fold{fold}.h5"), monitor="val_auc", verbose=1, save_best_only=True,
+			save_weights_only=True, mode="max", save_freq="epoch", options=options,
+		)
 
-	# Loading best model for inference
-	print('Loading best model...')
-	model.load_weights('fold-%i.h5' % fold)
+		history = model.fit(
+			get_dataset(files_train, batch_size=BATCH_SIZE, shuffle=True, repeat=True, aug=True),
+			epochs=EPOCHS,
+			callbacks=[model_ckpt, get_lr_callback(BATCH_SIZE, REPLICAS), tqdm_callback],
+			steps_per_epoch=train_image_count // BATCH_SIZE // REPLICAS // 4,
+			validation_data=get_dataset(files_valid, batch_size=BATCH_SIZE * 4, repeat=False, shuffle=False, aug=False),
+			verbose=1,
+		)
 
-	ds_valid = get_dataset(files_valid, labeled=False, return_image_ids=False,
-	                       repeat=True, shuffle=False, dim=IMG_SIZES[fold], batch_size=BATCH_SIZES[fold] * 2)
-	ct_valid = count_data_items(files_valid);
-	STEPS = ct_valid / BATCH_SIZES[fold] / 2 / REPLICAS
-	pred = model.predict(ds_valid, steps=STEPS, verbose=1)[:ct_valid, ]
-	oof_pred.append(np.mean(pred.reshape((ct_valid, 1), order='F'), axis=1))
+		print("Loading best model...")
+		model.load_weights(str(SAVEDIR / f"fold{fold}.h5"), options=options)
 
-	# GET OOF TARGETS AND idS
-	ds_valid = get_dataset(files_valid, repeat=False, dim=IMG_SIZES[fold],
-	                       labeled=True, return_image_ids=True)
-	oof_tar.append(np.array([target.numpy() for img, target in iter(ds_valid.unbatch())]))
+		ds_valid = get_dataset(files_valid, labeled=False, return_image_ids=False, repeat=True, shuffle=False,
+		                       batch_size=BATCH_SIZE * 2, aug=False)
+		STEPS = valid_image_count / BATCH_SIZE / 2 / REPLICAS
+		pred = model.predict(ds_valid, steps=STEPS, verbose=1)[:valid_image_count]
+		oof_pred.append(np.mean(pred.reshape((valid_image_count, 1), order="F"), axis=1))
 
-	# PLOT TRAINING
-	if DISPLAY_PLOT:
+		ds_valid = get_dataset(files_valid, repeat=False, labeled=True, return_image_ids=True, aug=False)
+		oof_target.append(np.array([target.numpy() for img, target in iter(ds_valid.unbatch())]))
+
 		plt.figure(figsize=(8, 6))
 		sns.distplot(oof_pred[-1])
 		plt.show()
 
 		plt.figure(figsize=(15, 5))
-		plt.plot(np.arange(len(history.history['auc'])), history.history['auc'], '-o', label='Train auc',
-		         color='#ff7f0e')
-		plt.plot(np.arange(len(history.history['auc'])), history.history['val_auc'], '-o', label='Val auc',
-		         color='#1f77b4')
-		x = np.argmax(history.history['val_auc']);
-		y = np.max(history.history['val_auc'])
-		xdist = plt.xlim()[1] - plt.xlim()[0];
-		ydist = plt.ylim()[1] - plt.ylim()[0]
-		plt.scatter(x, y, s=200, color='#1f77b4');
-		plt.text(x - 0.03 * xdist, y - 0.13 * ydist, 'max auc\n%.2f' % y, size=14)
-		plt.ylabel('auc', size=14);
-		plt.xlabel('Epoch', size=14)
-		plt.legend(loc=2)
-		plt2 = plt.gca().twinx()
-		plt2.plot(np.arange(len(history.history['auc'])), history.history['loss'], '-o', label='Train Loss',
-		          color='#2ca02c')
-		plt2.plot(np.arange(len(history.history['auc'])), history.history['val_loss'], '-o', label='Val Loss',
-		          color='#d62728')
-		x = np.argmin(history.history['val_loss']);
-		y = np.min(history.history['val_loss'])
-		ydist = plt.ylim()[1] - plt.ylim()[0]
-		plt.scatter(x, y, s=200, color='#d62728');
-		plt.text(x - 0.03 * xdist, y + 0.05 * ydist, 'min loss', size=14)
-		plt.ylabel('Loss', size=14)
-		plt.title('FOLD %i - Image Size %i, %s' %
-		          (fold + 1, IMG_SIZES[fold], EFNS[EFF_NETS[fold]].__name__), size=18)
-		plt.legend(loc=3)
-		plt.savefig(f'fig{fold}.png')
-		plt.show()
-from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score
+		plt.plot(
+			np.arange(len(history.history["auc"])),
+			history.history["auc"],
+			"-o",
+			label="Train auc",
+			color="#ff7f0e")
+		plt.plot(
+			np.arange(len(history.history["auc"])),
+			history.history["val_auc"],
+			"-o",
+			label="Val auc",
+			color="#1f77b4")
 
-oof = np.concatenate(oof_pred); true = np.concatenate(oof_tar);
-auc = roc_auc_score(true,oof)
-print('Overall OOF AUC= %.5f'%auc)
+		x = np.argmax(history.history["val_auc"])
+		y = np.max(history.history["val_auc"])
+
+		xdist = plt.xlim()[1] - plt.xlim()[0]
+		ydist = plt.ylim()[1] - plt.ylim()[0]
+
+		plt.scatter(x, y, s=200, color="#1f77b4")
+		plt.text(x - 0.03 * xdist, y - 0.13 * ydist, f"max auc\n{y}", size=14)
+
+		plt.ylabel("auc", size=14)
+		plt.xlabel("Epoch", size=14)
+		plt.legend(loc=2)
+
+		plt2 = plt.gca().twinx()
+		plt2.plot(
+			np.arange(len(history.history["auc"])),
+			history.history["loss"],
+			"-o",
+			label="Train Loss",
+			color="#2ca02c")
+		plt2.plot(
+			np.arange(len(history.history["auc"])),
+			history.history["val_loss"],
+			"-o",
+			label="Val Loss",
+			color="#d62728")
+
+		x = np.argmin(history.history["val_loss"])
+		y = np.min(history.history["val_loss"])
+
+		ydist = plt.ylim()[1] - plt.ylim()[0]
+
+		plt.scatter(x, y, s=200, color="#d62728")
+		plt.text(x - 0.03 * xdist, y + 0.05 * ydist, "min loss", size=14)
+
+		plt.ylabel("Loss", size=14)
+		plt.title(f"Fold {fold + 1} - Image Size {IMAGE_SIZE}, EfficientNetB{EFFICIENTNET_SIZE}", size=18)
+
+		plt.legend(loc=3)
+		plt.savefig(OOFDIR / f"fig{fold}.png")
+		plt.show()
