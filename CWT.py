@@ -42,3 +42,20 @@ for i in range(3):
 x = np.stack(cwts_f)
 print(x.shape)
 x = np.transpose(x)
+normalized_waves = []
+x = np.load("../input/g2net-gravitational-wave-detection/train/0/0/0/00001f4945.npy")
+# for demonstration we will use only signal from one detector
+cwts_f = []
+
+for i in x:
+	normalized_waves = x
+
+	normalized_waves *= 1.3e+22  # normalization
+
+	normalized_waves = signal.filtfilt(bHP, aHP, normalized_waves)
+	normalized_waves = np.expand_dims(normalized_waves, axis=0)
+	normalized_waves = tf.convert_to_tensor(normalized_waves)
+	normalized_waves = cwt_transform(normalized_waves)
+	cwts_f = []
+	cwts_f.append(np.squeeze(normalized_waves.numpy()))
+cwts_f = np.hstack(cwts_f)

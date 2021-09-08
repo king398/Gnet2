@@ -14,7 +14,6 @@ from sklearn.model_selection import train_test_split
 import tensorflow_addons as tfa
 import albumentations as A
 from scipy.fft import fft
-from CWT.cwt import ComplexMorletCWT
 from scipy import signal
 
 train_labels = pd.read_csv('/content/Train/ing_labels.csv')
@@ -38,10 +37,6 @@ def id2path(idx, is_train=True):
 	return path
 
 
-cwt_transform = ComplexMorletCWT(wavelet_width=8, fs=2048, lower_freq=20, upper_freq=500, n_scales=image_size[0],
-                                 stride=int(np.ceil(4096 / image_size[0])), output='magnitude',
-                                 data_format='channels_first')
-
 from scipy import signal
 
 bHP, aHP = signal.butter(8, (20, 500), btype='bandpass', fs=2048)
@@ -52,29 +47,25 @@ def filterSig(wave, a=aHP, b=bHP):
 	return np.array([signal.filtfilt(b, a, wave)])  # lfilter introduces a larger spike around 20hz
 
 
-def increase_dimension(idx, is_train):
-	# in order to use efficientnet we need 3 dimension images
-	wavess = np.load(id2path(idx, is_train)).astype(np.float32)
+import torch
+from nnAudio.Spectrogram import CQT1992v2
 
-	waves_f = []
-	cwts_f = []  # in order to use efficientnet we need 3 dimension images
-	for i in range(3):
-		wave = wavess[i]  # for demonstration we will use only signal from one detector
-		wave *= 1.3e+22  # normalization
 
-		# With a filter
-		wave_f = wave * signal.tukey(4096, 0.2)
-		wave_f = signal.filtfilt(bHP, aHP, wave_f)
-		waves_f.append(wave_f)
-		wave_t_f = tf.convert_to_tensor(wave_f[np.newaxis, np.newaxis, :])
-		cwt_f = cwt_transform(wave_t_f)
-		cwts_f.append(np.squeeze(cwt_f.numpy()))
-
-	return np.transpose(np.stack(cwts_f)).astype(np.float16)
+def increase_dimension(idx, is_train, transform=CQT1992v2(sr=2048, fmin=20, fmax=1024,
+                                                          hop_length=4)):  # in order to use efficientnet we need 3 dimension images
+	waves = np.load(id2path(idx, is_train))
+	waves = np.hstack(waves)
+	waves = waves / np.max(waves)
+	waves = filterSig(waves)
+	waves = torch.from_numpy(waves).float()
+	image = transform(waves)
+	image = np.array(image)
+	image = np.transpose(image, (1, 2, 0))
+	return image
 
 
 class Dataset(Sequence):
-	def __init__(self, idx, y=None, batch_size=64, shuffle=True, valid=False):
+	def __init__(self, idx, y=None, batch_size=24, shuffle=True, valid=False):
 		self.idx = idx
 		self.batch_size = batch_size
 		self.shuffle = shuffle
@@ -94,6 +85,7 @@ class Dataset(Sequence):
 			batch_y = self.y[ids * self.batch_size: (ids + 1) * self.batch_size]
 
 		batch_X = np.array([increase_dimension(x, self.is_train) for x in batch_ids])
+		batch_X = tf.image.resize(batch_X, size=(256, 256))
 
 		if self.is_train:
 			return np.array(batch_X, dtype=np.float32), batch_y
@@ -114,12 +106,29 @@ train_dataset = Dataset(x_train, y_train)
 valid_dataset = Dataset(x_valid, y_valid, valid=True)
 import efficientnet.tfkeras as efn
 
-model = tf.keras.Sequential([
 
-	efn.EfficientNetB7(include_top=False, input_shape=(), weights='imagenet'),
-	L.GlobalAveragePooling2D(),
-	L.Dense(32, activation='relu'),
-	L.Dense(1, activation='softmax', dtype=np.float16)])
+def build_model(size=256, efficientnet_size=0, weights="imagenet", count=0):
+	inputs = tf.keras.layers.Input(shape=(size, size, 3))
+
+	efn_string = f"EfficientNetB{efficientnet_size}"
+	efn_layer = getattr(efn, efn_string)(input_shape=(size, size, 3), weights=weights, include_top=False)
+
+	x = L.Conv2D(3, 3, activation='relu', padding='same')(inputs)
+	x  = efn_layer(x)
+	x = tf.keras.layers.GlobalAveragePooling2D()(x)
+
+	x = tf.keras.layers.Dropout(0.2)(x)
+	x = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+	model = tf.keras.Model(inputs=inputs, outputs=x)
+
+	lr_decayed_fn = tf.keras.experimental.CosineDecay(1e-3, 820)
+	opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
+	loss = tf.keras.losses.BinaryCrossentropy()
+	model.compile(optimizer=opt, loss=loss, metrics=["AUC"])
+	return model
+
+
+model = build_model()
 best = tf.keras.callbacks.ModelCheckpoint("/content/Temp", monitor="val_auc", save_best_only=True)
 lr_decayed_fn = tf.keras.experimental.CosineDecay(
 	1e-3,
