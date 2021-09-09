@@ -443,7 +443,7 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
 				size=IMAGE_SIZE,
 				efficientnet_size=EFFICIENTNET_SIZE,
 				weights=WEIGHTS,
-				count=train_image_count // BATCH_SIZE // REPLICAS // 4)
+				count=train_image_count // BATCH_SIZE // REPLICAS // 1)
 
 		model_ckpt = tf.keras.callbacks.ModelCheckpoint(
 			str(SAVEDIR / f"fold{fold}.h5"), monitor="val_auc", verbose=1, save_best_only=True,
@@ -453,8 +453,8 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
 		history = model.fit(
 			get_dataset(files_train, batch_size=BATCH_SIZE, shuffle=True, repeat=True, aug=True),
 			epochs=EPOCHS,
-			callbacks=[model_ckpt, get_lr_callback(BATCH_SIZE, REPLICAS), tqdm_callback],
-			steps_per_epoch=train_image_count // BATCH_SIZE // REPLICAS // 4,
+			callbacks=[model_ckpt, get_lr_callback(BATCH_SIZE, REPLICAS)],
+			steps_per_epoch=train_image_count // BATCH_SIZE // REPLICAS // 1,
 			validation_data=get_dataset(files_valid, batch_size=BATCH_SIZE * 4, repeat=False, shuffle=False, aug=False),
 			verbose=1,
 		)
