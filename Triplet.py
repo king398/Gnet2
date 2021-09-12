@@ -51,7 +51,22 @@ class BasicConv(tf.Module):
 		self.out_channels = out_planes
 		self.conv = tf.keras.layers.Conv2D(filters=out_planes, kernel_size=kernel_size, strides=stride, padding=padding,
 		                                   dilation_rate=dilation, groups=groups, use_bias=bias)
-		self,bn = tf.keras.layers.BatchNormalization(epsilon=1e-5,momentum=0.01)
+		self.bn = tf.keras.layers.BatchNormalization(epsilon=1e-5, momentum=0.01)
+		self.relu = tf.keras.layers.ReLU()
+
+	def forward(self, x):
+		x = self.conv(x)
+		if self.bn is not None:
+			x = self.bn(x)
+		if self.relu is not None:
+			x = self.relu(x)
+		return x
+
+
+class ChannelPool(tf.Module):
+	def forward(self, x):
+		return tf.concat((tf.math.reduce_max(x, 1)[0].unsqueeze(1), tf.math.reduce_mean(x, 1).unsqueeze(1)), axis=1)
+
 
 tpu, strategy = get_hardware_strategy()
 # For tf.dataset
