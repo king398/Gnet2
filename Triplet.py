@@ -1,12 +1,17 @@
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
-input_shape = (1, 28, 28, 3)
-x = tf.random.normal(input_shape)
+tf.config.experimental.set_memory_growth(tf.config.experimental.list_physical_devices('GPU')[0], True)
 
-from tensorflow.keras.layers import Layer
+image = tf.keras.preprocessing.image.load_img(
+	"F:\Pycharm_projects\Gnet2\data\WhatsApp Image 2021-09-12 at 1.01.31 PM (1).jpeg")
+plt.imshow(image)
+plt.show()
+x = tf.expand_dims(tf.convert_to_tensor(tf.keras.preprocessing.image.img_to_array(image)), axis=0)
+print(x.shape)
 
 
-class BasicConv(Layer):
+class BasicConv(tf.keras.Model):
 	def __init__(self, out_planes, kernel_size, stride=1, padding="same", dilation=1, groups=1, relu=True,
 	             bn=True, bias=False):
 		super(BasicConv, self).__init__()
@@ -17,7 +22,7 @@ class BasicConv(Layer):
 		self.bn = tf.keras.layers.BatchNormalization(epsilon=1e-5, momentum=0.01) if bn else None
 		self.relu = tf.keras.layers.ReLU() if relu else None
 
-	def __call__(self, x):
+	def call(self, x):
 		x = self.conv(x)
 		if self.bn is not None:
 			x = self.bn(x)
@@ -26,12 +31,25 @@ class BasicConv(Layer):
 		return x
 
 
-class ChannelPool(tf.Module(name=None)):
+import tensorflow as tf
+import torch
+
+
+class ChannelPool(tf.keras.Model):
+	def __init__(self):
+		super(ChannelPool, self).__init__()
+
 	def __call__(self, x):
-		return tf.concat((tf.squeeze(tf.math.reduce_max(x, 1)[0]), tf.squeeze(tf.math.reduce_mean(x, 1))), axis=1)
+		x = x.numpy()
+		x = torch.from_numpy(x)
+		x = torch.cat((torch.max(x, 1)[0].unsqueeze(1), torch.mean(x, 1).unsqueeze(1)), dim=1)
+		x = x.numpy()
+		x = tf.convert_to_tensor(x)
+
+		return x
 
 
-class SpatialGate(tf.Module(name=None)):
+class SpatialGate(tf.keras.Model):
 	def __init__(self):
 		super(SpatialGate, self).__init__()
 		kernel_size = 7
@@ -45,13 +63,12 @@ class SpatialGate(tf.Module(name=None)):
 		return x * scale
 
 
-class TripletAttention(tf.keras.layers.Layer()):
+class TripletAttention(tf.keras.Model):
 	def __init__(self, no_spatial=False):
 		super(TripletAttention, self).__init__()
 		self.ChannelGateH = SpatialGate()
 		self.ChannelGateW = SpatialGate()
 		self.no_spatial = no_spatial
-		self.Permute = tf.keras.layers.Permute()
 		if not no_spatial:
 			self.SpatialGate = SpatialGate()
 
@@ -68,3 +85,9 @@ class TripletAttention(tf.keras.layers.Layer()):
 		else:
 			x_out = (1 / 2) * (x_out11 + x_out21)
 		return x_out
+
+
+model = TripletAttention()
+x = model(x=x)
+plt.imshow(tf.squeeze(x).numpy() / 255)
+plt.show()
