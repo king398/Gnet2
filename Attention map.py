@@ -241,9 +241,8 @@ import numpy as np
 # Function to create our EfficientNetB7 model
 def get_model():
 	inp = tf.keras.layers.Input(shape=(*IMAGE_SIZE, 3))
-	x = TripletAttention()(inp)
-
-	x = efn.EfficientNetB0(include_top=False, weights='imagenet')(x)
+	x = efn.EfficientNetB0(include_top=False, weights='imagenet')(inp)
+	x = TripletAttention()(x)
 	x = tf.keras.layers.GlobalAveragePooling2D()(x)
 	output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
 	model = tf.keras.models.Model(inputs=[inp], outputs=[output])
