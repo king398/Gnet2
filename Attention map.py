@@ -238,25 +238,25 @@ def prepare_image(wave):
 import numpy as np
 
 
-# Function to create our EfficientNetB7 model
+def generalized_mean_pool_2d(X, gm_exp):
+	pool = (tf.reduce_mean(tf.abs(X ** (gm_exp)),
+	                       axis=[1, 2],
+	                       keepdims=False) + 1.e-8) ** (1. / gm_exp)
+	return pool
+
+
 def get_model():
-	inp = tf.keras.layers.Input(shape=(*IMAGE_SIZE, 3))
-	x = efn.EfficientNetB0(include_top=False, weights='imagenet')(inp)
-	x = TripletAttention()(x)
-	x = tf.keras.layers.GlobalAveragePooling2D()(x)
-	output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-	model = tf.keras.models.Model(inputs=[inp], outputs=[output])
-	opt = tf.keras.optimizers.Adam(learning_rate=LR)
-	model.compile(
-		optimizer=opt,
-		loss=[tf.keras.losses.BinaryCrossentropy()],
-		metrics=[tf.keras.metrics.AUC()]
-	)
-	return model
-
-
-x = prepare_image(wave=None)
-
-model = get_model()
-p = model(x[tf.newaxis, :, :, :])
-print(p)
+	with strategy.scope():
+		inp = tf.keras.layers.Input(shape=(*IMAGE_SIZE, 3))
+		x = efn.EfficientNetB7(include_top=False, weights='noisy-student')(inp)
+		x = GeMPoolingLayer(p=4)(x)
+		output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+		model = tf.keras.models.Model(inputs=[inp], outputs=[output])
+		opt = tf.keras.optimizers.Adam(learning_rate=LR)
+		opt = tfa.optimizers.SWA(opt)
+		model.compile(
+			optimizer=opt,
+			loss=[tf.keras.losses.BinaryCrossentropy()],
+			metrics=[tf.keras.metrics.AUC()]
+		)
+		return model

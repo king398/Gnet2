@@ -106,11 +106,36 @@ class TripletAttention(tf.keras.layers.Layer):
 		return x_out
 
 
+model_aug = TripletAttention()
+
+
+# Function to prepare image
+def prepare_image(wave):
+	# Decode raw
+	wave = tf.reshape(tf.io.decode_raw(wave, tf.float64), (3, 4096))
+	normalized_waves = []
+	# Normalize
+	for i in range(3):
+		normalized_wave = wave[i] / tf.math.reduce_max(wave[i])
+		normalized_waves.append(normalized_wave)
+	# Stack and cast
+	wave = tf.stack(normalized_waves)
+	wave = tf.cast(wave, tf.float32)
+	# Create image
+	image = create_cqt_image(wave, HOP_LENGTH)
+	image = tf.squeeze(triplet(tf.expand_dims(image, axis=1)))
+	# Resize image
+	image = tf.image.resize(image, [*IMAGE_SIZE])
+	# Reshape
+	image = tf.reshape(image, [*IMAGE_SIZE, 3])
+	return tf.cast(image, tf.bfloat16)
+
+
 def get_model():
 	inp = tf.keras.layers.Input(shape=(512, 512, 3))
 
 	x = efn.EfficientNetB7(include_top=False, weights='imagenet')(inp)
-	x = GeMPoolingLayer(p=4, train_p=False)(x)
+	x = tf.keras.layers.GlobalAveragePooling2D(p=4, train_p=False)(x)
 	output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
 	model = tf.keras.models.Model(inputs=[inp], outputs=[output])
 	opt = tf.keras.optimizers.Adam()
