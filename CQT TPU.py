@@ -1,10 +1,3 @@
-!pip
-install
-efficientnet
-tensorflow_addons > / dev / null
-!pip
-install - q
-git + https: // github.com // Kevin - McIsaac / cmorlet - tensorflow @ Performance - -no - deps
 import os
 import math
 import random
@@ -311,6 +304,17 @@ def get_model():
 		return model
 
 
+options = tf.train.CheckpointOptions(experimental_io_device="/job:localhost")
+model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+	filepath="Temp.h5",
+	save_weights_only=True,
+	monitor='auc',
+	mode='max',
+	save_best_only=True, options=options)
+
+from tensorflow.keras import backend as K
+
+
 # Function to train a model with 100% of the data
 def train_and_evaluate():
 	print('\n')
@@ -330,6 +334,7 @@ def train_and_evaluate():
 	                    epochs=EPOCHS,
 	                    callbacks=[get_lr_callback()],
 	                    verbose=VERBOSE)
+	model.load_weights("Temp.h5", options=options)
 
 	print('\n')
 	print('-' * 50)
