@@ -330,37 +330,38 @@ files_train_all = np.array(TRAINING_FILENAMES)
 
 
 # Function to train a model with 100% of the data
-def train_and_evaluate():
+def train_and_evaluate(train_fold):
 	for fold, (trn_idx, val_idx) in enumerate(kf.split(files_train_all)):
-		files_train = files_train_all[trn_idx]
-		files_valid = files_train_all[val_idx]
-		print('\n')
-		print('-' * 50)
-		print(f'Training EFFB7 with 100% of the data with seed {SEED} for {EPOCHS} epochs')
-		if tpu:
-			tf.tpu.experimental.initialize_tpu_system(tpu)
-			train_dataset = get_training_dataset(files_train, ordered=False, labeled=True)
-			train_dataset = train_dataset.map(lambda image, image_id, target: (image, target))
-			valid_dataset = get_training_dataset(files_valid, ordered=False, labeled=True)
-			valid_dataset = valid_dataset.map(lambda image, image_id, target: (image, target))
-			STEPS_PER_EPOCH = NUM_TRAINING_IMAGES // 4 // (BATCH_SIZE * 4)
-			K.clear_session()
-			# Seed everything
-			seed_everything(SEED)
-			model = get_model()
-			history = model.fit(train_dataset,
-			                    steps_per_epoch=STEPS_PER_EPOCH,
-			                    epochs=EPOCHS,
-			                    callbacks=[get_lr_callback(), model_checkpoint_callback],
-			                    verbose=VERBOSE, validation_data=valid_dataset)
-			model.load_weights("Temp.h5", options=options)
-
+		if fold == train_fold:
+			files_train = files_train_all[trn_idx]
+			files_valid = files_train_all[val_idx]
 			print('\n')
-	print('-' * 50)
-	print('Test inference...')
+			print('-' * 50)
+			print(f'Training EFFB7 with 100% of the data with seed {SEED} for {EPOCHS} epochs')
+			if tpu:
+				tf.tpu.experimental.initialize_tpu_system(tpu)
+				train_dataset = get_training_dataset(files_train, ordered=False, labeled=True)
+				train_dataset = train_dataset.map(lambda image, image_id, target: (image, target))
+				valid_dataset = get_training_dataset(files_valid, ordered=False, labeled=True)
+				valid_dataset = valid_dataset.map(lambda image, image_id, target: (image, target))
+				STEPS_PER_EPOCH = NUM_TRAINING_IMAGES // 4 // (BATCH_SIZE * 4)
+				K.clear_session()
+				# Seed everything
+				seed_everything(SEED)
+				model = get_model()
+				history = model.fit(train_dataset,
+				                    steps_per_epoch=STEPS_PER_EPOCH,
+				                    epochs=EPOCHS,
+				                    callbacks=[get_lr_callback(), model_checkpoint_callback],
+				                    verbose=VERBOSE, validation_data=valid_dataset)
+				model.load_weights("Temp.h5", options=options)
+
+				print('\n')
+		print('-' * 50)
+		print('Test inference...')
 
 
 # Predict the test set
 
 
-train_and_evaluate()
+train_and_evaluate(train_fold=0)
