@@ -1,3 +1,13 @@
+!pip
+install - q
+efficientnet
+!pip
+install - q
+tensorflow - addons
+!pip
+install - q
+git + https: // github.com // Kevin - McIsaac / cmorlet - tensorflow @ Performance - -no - deps
+
 import os
 import math
 import random
@@ -147,7 +157,7 @@ def prepare_cqt_kernel(
 # Function to create cqt image
 from CWT.cwt import ComplexMorletCWT
 
-cwt_transform = ComplexMorletCWT(wavelet_width=8, fs=2048, lower_freq=20, upper_freq=500, n_scales=IMAGE_SIZE[0],
+cwt_transform = ComplexMorletCWT(wavelet_width=8, fs=2048, lower_freq=20, upper_freq=1024, n_scales=IMAGE_SIZE[0],
                                  stride=int(np.ceil(4096 / IMAGE_SIZE[0])), output='magnitude',
                                  data_format='channels_first')
 
@@ -321,12 +331,18 @@ model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
 
 from tensorflow.keras import backend as K
 
-kf = KFold(n_splits=4)
+kf = KFold(n_splits=4, random_state=1213)
 
 oof_pred = []
 oof_target = []
 
 files_train_all = np.array(TRAINING_FILENAMES)
+
+oof_img_ids = []
+
+
+def count_data_items(fileids):
+	return len(fileids) * 28000
 
 
 # Function to train a model with 100% of the data
@@ -344,7 +360,7 @@ def train_and_evaluate(train_fold):
 				train_dataset = train_dataset.map(lambda image, image_id, target: (image, target))
 				valid_dataset = get_training_dataset(files_valid, ordered=False, labeled=True)
 				valid_dataset = valid_dataset.map(lambda image, image_id, target: (image, target))
-				STEPS_PER_EPOCH = NUM_TRAINING_IMAGES // 4 // (BATCH_SIZE * 4)
+				STEPS_PER_EPOCH = 420000 // (BATCH_SIZE * 4)
 				K.clear_session()
 				# Seed everything
 				seed_everything(SEED)
@@ -353,15 +369,43 @@ def train_and_evaluate(train_fold):
 				                    steps_per_epoch=STEPS_PER_EPOCH,
 				                    epochs=EPOCHS,
 				                    callbacks=[get_lr_callback(), model_checkpoint_callback],
-				                    verbose=VERBOSE, validation_data=valid_dataset)
+				                    verbose=VERBOSE, validation_data=valid_dataset,
+				                    validation_steps=140000 / BATCH_SIZE / 2 / 8)
 				model.load_weights("Temp.h5", options=options)
+				valid_image_count = count_data_items(files_valid)
+				STEPS = valid_image_count / BATCH_SIZE / 2 / 8
+				pred = model.predict(valid_dataset, steps=STEPS, verbose=0)[:140000]
+				oof_pred.append(np.mean(pred.reshape((140000, 1), order="F"), axis=1))
 
+				oof_target.append(np.array([target.numpy() for img, target in iter(valid_dataset.unbatch())]))
+				oof_img_ids.append(np.array([target.numpy() for img, target in iter(valid_dataset.unbatch())]))
 				print('\n')
 		print('-' * 50)
 		print('Test inference...')
 
 
 # Predict the test set
+OOFDIR = Path("oof")
+OOFDIR.mkdir(exist_ok=True)
 
+train_and_evaluate(train_fold=1)
+oof = np.concatenate(oof_pred)
+true = np.concatenate(oof_target)
+auc = roc_auc_score(y_true=true, y_score=oof)
+print(f"AUC: {auc:.5f}")
+train_fold = 1
+try:
 
-train_and_evaluate(train_fold=0)
+	img_ids = np.concatenate(oof_img_ids)
+
+	df = pd.DataFrame({
+		'img_ids': img_ids,
+		"y_true": true.reshape(-1),
+		"y_pred": oof
+	})
+	df.head()
+	df.to_csv(OOFDIR / f"oof_512_b7_fold{train_fold}.csv", index=False)
+except:
+	None
+	print('None')
+	df.to_csv(OOFDIR / f"oof_512_b7_fold2.csv", index=False)
