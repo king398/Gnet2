@@ -341,20 +341,22 @@ from tensorflow import keras
 from classification_models.tfkeras import Classifiers
 
 
-def build_model(size=256, efficientnet_size=0, weights="noisy-student", count=0):
-	inputs = tf.keras.layers.Input(shape=(size, size, 3))
-	seresnet34, preprocess_input = Classifiers.get('seresnet34')
+def get_model(size=256, efficientnet_size=0, weights="noisy-student", count=0):
+	with strategy.scope():
+		inputs = tf.keras.layers.Input(shape=(size, size, 3))
+		seresnet34, preprocess_input = Classifiers.get('seresnet34')
 
-	efn_layer = seresnet34((size, size, 3), weights='imagenet')
+		efn_layer = seresnet34((size, size, 3), weights='imagenet', include_top=False)
 
-	x = efn_layer(inputs)
-	x = tf.keras.layers.GlobalAveragePooling2D()(x)
-	#     x = tf.keras.layers.Dropout(0.2)(x)
-	x = tf.keras.layers.Dense(1, activation="sigmoid")(x)
-	model = tf.keras.Model(inputs=inputs, outputs=x)
+		x = efn_layer(inputs)
+		x = tf.keras.layers.GlobalAveragePooling2D()(x)
+		#     x = tf.keras.layers.Dropout(0.2)(x)
+		x = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+		model = tf.keras.Model(inputs=inputs, outputs=x)
 
-	lr_decayed_fn = tf.keras.experimental.CosineDecay(1e-3, count)
-	opt = tfa.optimizers.AdamW(lr_decayed_fn, learning_rate=1e-4)
-	loss = tf.keras.losses.BinaryCrossentropy()
-	model.compile(optimizer=opt, loss=loss, metrics=["AUC"])
-	return model
+		lr_decayed_fn = tf.keras.experimental.CosineDecay(1e-3, count)
+		opt = tf.keras.optimizers.Adam(learning_rate=LR)
+		opt = tfa.optimizers.SWA(opt)
+		loss = tf.keras.losses.BinaryCrossentropy()
+		model.compile(optimizer=opt, loss=loss, metrics=["AUC"])
+		return model
